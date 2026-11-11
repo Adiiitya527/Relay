@@ -1,0 +1,7 @@
+{
+  "name": "@relay/mock-consumer",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Demo webhook receiver with failure modes (implemented on Day 3; zero runtime dependencies)",
+  "type": "module"
+}

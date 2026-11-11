@@ -1,0 +1,7 @@
+{
+  "name": "@relay/dashboard",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Relay operator dashboard (scaffolded on Day 4)",
+  "type": "module"
+}

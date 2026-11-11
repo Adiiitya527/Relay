@@ -1,0 +1,8 @@
+# Store and check out text files with LF on every OS.
+# Required so migration checksums are identical on Windows, Linux CI and Docker.
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.ico binary
+*.woff2 binary
