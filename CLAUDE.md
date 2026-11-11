@@ -6,7 +6,8 @@ payloads, retries with backoff, a dead-letter queue, replay, per-endpoint circui
 breaking, and SSRF protection.
 
 Full design: `docs/ARCHITECTURE.md`. Current status: `docs/PROGRESS.md`. Read both
-before starting any milestone.
+before starting any milestone. The current day's approved step-by-step plan is in
+`docs/plans/` (e.g. `docs/plans/day1.md`); work from it after a `/clear`.
 
 ## Working agreement
 - The developer wants to UNDERSTAND every change. Explain non-obvious code, especially SQL,
@@ -17,7 +18,7 @@ before starting any milestone.
 - At the end of each milestone, update `docs/PROGRESS.md` (done / pending / decisions).
 
 ## Stack (fixed)
-- Node.js (current LTS, >= 22), TypeScript (strict), npm workspaces.
+- Node.js (current LTS, >= 22.9), TypeScript (strict), npm workspaces.
 - `server/`: Fastify, Zod, `pg` (node-postgres), pino. Dev: tsx, vitest, @types/node, @types/pg.
 - `dashboard/`: React + Vite + TypeScript + Tailwind CSS.
 - `mock-consumer/`: zero runtime dependencies (node:http, node:crypto only).
@@ -56,10 +57,13 @@ relay/
 4. Every claim sets a lease (`locked_until`) and a fresh `lease_token`. Result writes
    must match `id AND lease_token AND status = 'in_flight'` (fencing). Zero rows
    updated = the lease was lost; log it and discard the result.
-5. Lease duration must exceed the HTTP timeout by a safe margin.
+5. A claim takes only as many rows as the worker has free concurrency slots, so every
+   claimed request starts immediately. Config validation enforces
+   `LEASE_MS >= 2 * HTTP_TIMEOUT_MS + 5000`.
 6. Delivery is at-least-once. The `webhook-id` header equals the message id and is
    stable across retries so consumers can deduplicate.
 7. All time comparisons use the database clock (`now()`), never the worker's clock.
+   Sole exception: the `webhook-timestamp` header is the worker's send time (spec-required).
 8. Every outbound HTTP request to a customer URL goes through the SSRF-safe client in
    `server/src/delivery/`. No other code may call customer URLs.
 9. Deliveries skipped because a circuit is open do NOT consume retry attempts.
