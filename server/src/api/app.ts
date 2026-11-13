@@ -3,6 +3,7 @@ import type { Config } from '../config.js';
 import type { Db } from '../db/pool.js';
 import { registerAuth } from './auth.js';
 import { registerErrorHandling } from './errors.js';
+import { registerEndpointRoutes } from './routes/endpoints.js';
 import { registerHealthRoutes } from './routes/health.js';
 
 export interface AppDeps {
@@ -42,7 +43,8 @@ export function buildApp({ config, pool, logger }: AppDeps): FastifyInstance {
   app.register(
     async (v1) => {
       registerAuth(v1, pool);
-      // Step 6+: endpoints and messages routes are registered here.
+      registerEndpointRoutes(v1, pool, config);
+      // Step 7+: messages routes are registered here.
     },
     { prefix: '/v1' },
   );
