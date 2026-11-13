@@ -11,7 +11,8 @@
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "vitest run",
     "migrate": "node --env-file-if-exists=../.env --import tsx src/scripts/migrate.ts",
-    "create-app": "node --env-file-if-exists=../.env --import tsx src/scripts/create-app.ts"
+    "create-app": "node --env-file-if-exists=../.env --import tsx src/scripts/create-app.ts",
+    "dev:api": "node --env-file-if-exists=../.env --import tsx src/server.ts"
   },
   "dependencies": {
     "fastify": "^5.12.8",
