@@ -1,5 +1,11 @@
 import pg from 'pg';
 
+/**
+ * Anything that can run a query: the pool (auto-checkout, one statement) or a checked-out
+ * client (needed for multi-statement transactions). Data functions accept either.
+ */
+export type Db = pg.Pool | pg.PoolClient;
+
 /** The only logger method the pool needs; a pino Logger satisfies it. */
 export interface PoolLogger {
   error(obj: Record<string, unknown>, msg: string): void;
