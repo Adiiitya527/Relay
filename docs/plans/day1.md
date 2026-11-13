@@ -155,14 +155,24 @@ CREATE TABLE delivery_attempts (
   error_kind        text CHECK (error_kind IN
                      ('timeout','dns','connection','tls','ssrf_blocked','http_status','lease_expired')),
   error_message     text CHECK (length(error_message) <= 1024),
-  CHECK (error_kind IS NOT NULL OR response_status BETWEEN 200 AND 299)  -- non-success must be classified
+  CONSTRAINT delivery_attempts_failure_has_error_kind  -- non-success must be classified
+    CHECK (error_kind IS NOT NULL
+           OR (response_status IS NOT NULL AND response_status BETWEEN 200 AND 299))
+    -- explicit IS NOT NULL: a CHECK passes on NULL, and NULL BETWEEN … is NULL (D30)
 );
 CREATE INDEX delivery_attempts_delivery_idx ON delivery_attempts (delivery_id, id);
   -- GET /v1/deliveries/:id/attempts; also FK index for cascade
 ```
 
-Note vs. the reviewed plan: `messages.payload` gains `CHECK (jsonb_typeof(payload) = 'object')`
-to enforce Q3 at the database level as well as in Zod.
+Notes vs. the reviewed plan:
+- `messages.payload` gains `CHECK (jsonb_typeof(payload) = 'object')` to enforce Q3 at the
+  database level as well as in Zod.
+- In `server/migrations/001_init.sql`, table-level CHECKs and the composite FKs have explicit
+  names (e.g. `deliveries_lease_set_when_in_flight`, `deliveries_endpoint_same_app_fk`) so
+  errors are readable and tests can assert which constraint fired. Semantics unchanged.
+- D30 (found by step 3 tests): the attempt CHECK originally read
+  `error_kind IS NOT NULL OR response_status BETWEEN 200 AND 299`, which evaluates to NULL
+  (= passes) when both are NULL. Fixed before 001 was ever applied to `relay`.
 
 **Design notes**
 - `ON DELETE CASCADE` follows ownership (application → endpoints/messages → deliveries →

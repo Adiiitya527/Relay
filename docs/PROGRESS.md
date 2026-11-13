@@ -113,6 +113,7 @@ cleanup, auto-disable endpoints on 410 Gone.
 | D27 | (A1) `createPool()` takes timeouts as options (env `DB_STATEMENT_TIMEOUT_MS`, `DB_IDLE_IN_TX_TIMEOUT_MS`); migration runner uses its own connection with NO `statement_timeout` (tested) | Long migrations and `pg_advisory_lock` waits must not be cancelled |
 | D28 | (A2) Tests with concurrent requests use a pool with `max >= 20` | Waiting transactions can't exhaust the pool and cause false failures |
 | D29 | (A3) `engines.node >= 22.9`; scripts use `node --env-file-if-exists` | Flag needs 22.9; absent file is a no-op in Docker/CI |
+| D30 | CHECK constraints on nullable columns must make the NULL case explicit (`x IS NOT NULL AND …`) | A CHECK passes when its expression is NULL; found by a step-3 test on `delivery_attempts` and fixed in 001 before it reached `relay` (only `relay_test` was reset) |
 
 ## Known limitations / blockers
 - Docker/WSL2 not working on dev machine; Docker Compose deferred to Day 5 (validated in CI).

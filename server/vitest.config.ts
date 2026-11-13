@@ -14,6 +14,8 @@ export default defineConfig({
   test: {
     include: ['test/**/*.test.ts'],
     environment: 'node',
+    // Applies migrations to TEST_DATABASE_URL once per run (after the safety guard).
+    globalSetup: ['test/global-setup.ts'],
     // CLAUDE.md: tests run sequentially against one real database. Files never run in
     // parallel; concurrency *inside* a test (race tests) is still allowed.
     fileParallelism: false,
