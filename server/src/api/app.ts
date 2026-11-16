@@ -1,15 +1,19 @@
 import Fastify, { type FastifyBaseLogger, type FastifyInstance } from 'fastify';
+import type pg from 'pg';
 import type { Config } from '../config.js';
-import type { Db } from '../db/pool.js';
 import { registerAuth } from './auth.js';
 import { registerErrorHandling } from './errors.js';
 import { registerEndpointRoutes } from './routes/endpoints.js';
 import { registerHealthRoutes } from './routes/health.js';
+import { registerMessageRoutes } from './routes/messages.js';
 
 export interface AppDeps {
   config: Config;
-  /** Owned by the caller: buildApp never ends it (tests share one pool across apps). */
-  pool: Db;
+  /**
+   * Owned by the caller: buildApp never ends it (tests share one pool across apps).
+   * A Pool (not any Db) because publish checks out a client for its transaction.
+   */
+  pool: pg.Pool;
   /** A pino logger. Typed as Fastify's base logger so the app keeps the default instance type. */
   logger: FastifyBaseLogger;
 }
@@ -44,7 +48,7 @@ export function buildApp({ config, pool, logger }: AppDeps): FastifyInstance {
     async (v1) => {
       registerAuth(v1, pool);
       registerEndpointRoutes(v1, pool, config);
-      // Step 7+: messages routes are registered here.
+      registerMessageRoutes(v1, pool);
     },
     { prefix: '/v1' },
   );
