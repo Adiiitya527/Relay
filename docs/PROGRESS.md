@@ -2,9 +2,8 @@
 
 Status legend: [x] done · [ ] pending · [~] in progress · [-] cut / deferred
 
-**Current milestone:** Day 2 — Delivery engine (not started)
-**Next action:** Plan Day 2 in Plan Mode (backoff, signing, SSRF client, claim/record/sweeper,
-worker loop) and save it to `docs/plans/day2.md`. Day 1 is complete.
+**Current milestone:** Day 2 — Delivery engine (in progress)
+**Next action:** Day 2 step 1 (backoff) from the approved plan `docs/plans/day2.md`.
 
 ---
 
@@ -33,6 +32,7 @@ Plan: `docs/plans/day1.md` (9 steps, one commit each).
   **Met:** 274 tests in 16 files pass; typecheck clean (commit `45c6753`).
 
 ## Day 2 — Delivery engine (most important day)
+- [x] Day 2 plan produced in Plan Mode, reviewed and approved (`docs/plans/day2.md`)
 - [ ] Backoff function (exponential + jitter, cap, max attempts) + unit tests
 - [ ] Standard Webhooks signing + unit tests (incl. verification helper)
 - [ ] SSRF-safe HTTP client (validated DNS lookup, IP pinning, no redirects, timeout, response cap) + tests
@@ -153,3 +153,4 @@ cleanup, auto-disable endpoints on 410 Gone.
 | | Day 0 | Starter files created |
 | 2026-11-11 | Day 1 planning | Architecture reviewed (R1–R16), schema + state machine finalised, plan approved with A1–A3; saved to `docs/plans/day1.md` |
 | 2026-11-11 – 11-17 | Day 1 implementation | Steps 0–9 done, one commit each. 274 tests green. Found and fixed: NULL-passing CHECK (D30), checked-out-client crash (D31), ms-truncated cursor (D33), jsonb-unstorable payloads (D34); corrected the `/healthz` test expectation (D40). Stretch (backoff/signing) moved to Day 2 |
+| 2026-11-17 | Day 2 planning | Plan approved and saved to `docs/plans/day2.md` (steps 0–9, decisions D41–D50 proposed). Chosen: any destination port allowed; HTTPS tested with a committed self-signed test cert |
