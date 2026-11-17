@@ -485,6 +485,15 @@ Allowed dependencies only: root dev `typescript`; `server` runtime `fastify zod 
 
 **Stretch (only if early):** pure `backoff.ts` and `signing.ts` with unit tests.
 
+### Where implementation departed from this plan (all recorded in PROGRESS.md)
+- Step 3: `delivery_attempts_failure_has_error_kind` CHECK made NULL-explicit (D30).
+- Step 5: `/healthz` after `pg_terminate_backend` *recovers* (200); 503 is tested with an
+  unreachable DB instead (D40). Added `api/start.ts` so start/stop order is testable.
+- Step 7: added `db/tx.ts` `withTransaction()` (checked-out-client crash, D31); jsonb-unstorable
+  payloads → 400 (D34).
+- Step 8: cursor holds epoch **microseconds** computed in SQL, not a JS `Date` (D33).
+- Stretch not done; backoff and signing move to Day 2.
+
 ---
 
 ## 7. Per-step process

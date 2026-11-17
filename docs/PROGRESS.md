@@ -2,8 +2,9 @@
 
 Status legend: [x] done · [ ] pending · [~] in progress · [-] cut / deferred
 
-**Current milestone:** Day 1 — Foundation
-**Next action:** Day 1 step 1 (workspace scaffold + config) — see `docs/plans/day1.md`
+**Current milestone:** Day 2 — Delivery engine (not started)
+**Next action:** Plan Day 2 in Plan Mode (backoff, signing, SSRF client, claim/record/sweeper,
+worker loop) and save it to `docs/plans/day2.md`. Day 1 is complete.
 
 ---
 
@@ -17,17 +18,19 @@ Status legend: [x] done · [ ] pending · [~] in progress · [-] cut / deferred
 
 ## Day 1 — Foundation: schema, API, idempotent ingestion
 Plan: `docs/plans/day1.md` (9 steps, one commit each).
-- [ ] npm workspaces scaffold (server, dashboard, mock-consumer), tsconfig, .gitignore, .gitattributes, .env.example
-- [ ] Config module (Zod-validated env)
-- [ ] Migration runner (schema_migrations table, one transaction per file, advisory lock)
-- [ ] Migration 001: applications, endpoints, messages, deliveries, delivery_attempts
-- [ ] `create-app` script (prints API key once, stores hash)
-- [ ] API key auth hook (tenant scoping)
-- [ ] Endpoints API: create / list / get / update / get-secret
-- [ ] Messages API: publish (transactional fan-out + idempotency), list (keyset pagination), get
-- [ ] Test harness: test DB, migrations in global setup, truncate per test
-- [ ] Tests: auth, tenant isolation, fan-out by event type, idempotent publish
+- [x] npm workspaces scaffold (server, dashboard, mock-consumer), tsconfig, .gitignore, .gitattributes, .env.example
+- [x] Config module (Zod-validated env)
+- [x] Migration runner (schema_migrations table, one transaction per file, advisory lock)
+- [x] Migration 001: applications, endpoints, messages, deliveries, delivery_attempts
+- [x] `create-app` script (prints API key once, stores hash)
+- [x] API key auth hook (tenant scoping)
+- [x] Endpoints API: create / list / get / update / get-secret
+- [x] Messages API: publish (transactional fan-out + idempotency), list (keyset pagination), get
+- [x] Test harness: test DB, migrations in global setup, truncate per test
+- [x] Tests: auth, tenant isolation, fan-out by event type, idempotent publish
+- [-] Stretch: backoff + signing pure functions → moved to Day 2
 - **Done when:** publish creates correct delivery rows; all tests green; typecheck green.
+  **Met:** 274 tests in 16 files pass; typecheck clean (commit `45c6753`).
 
 ## Day 2 — Delivery engine (most important day)
 - [ ] Backoff function (exponential + jitter, cap, max attempts) + unit tests
@@ -114,6 +117,16 @@ cleanup, auto-disable endpoints on 410 Gone.
 | D28 | (A2) Tests with concurrent requests use a pool with `max >= 20` | Waiting transactions can't exhaust the pool and cause false failures |
 | D29 | (A3) `engines.node >= 22.9`; scripts use `node --env-file-if-exists` | Flag needs 22.9; absent file is a no-op in Docker/CI |
 | D30 | CHECK constraints on nullable columns must make the NULL case explicit (`x IS NOT NULL AND …`) | A CHECK passes when its expression is NULL; found by a step-3 test on `delivery_attempts` and fixed in 001 before it reached `relay` (only `relay_test` was reset) |
+| D31 | Every multi-statement transaction goes through `withTransaction()` (`src/db/tx.ts`), which listens for `'error'` on the checked-out client and destroys broken clients | pg-pool removes its error listener from a checked-out client; a connection dying mid-transaction would otherwise be an unhandled `'error'` event and crash the process (verified by a negative-control test). Extends D19 |
+| D32 | 503 `database_unavailable` (+ `Retry-After: 5`) covers connection errors AND `57014` statement timeout and `53300` too many connections | All mean "retry later", not "bug"; 500 is reserved for real bugs |
+| D33 | Message-list cursor = base64url of `<created_at epoch µs>\|<id>`, computed in SQL, never via a JS `Date` | Postgres has µs precision, `Date` only ms: a ms cursor silently skips rows in the same millisecond (verified by a negative-control test). Unsigned: every query is scoped by `app_id` |
+| D34 | Valid JSON that jsonb cannot store (`\u0000`, unpaired surrogate; SQLSTATE 22P05 / 22P02) → 400 `validation_failed` | It is the client's input, not a server fault |
+| D35 | Auth runs in `onRequest` (before body parsing); missing / malformed / unknown key → identical 401 + `WWW-Authenticate: Bearer`; DB error during auth → 503, never 401 | No body buffering for anonymous callers; no key-probing signal; outages don't look like bad keys |
+| D36 | Request bodies and list query strings are strict: unknown fields → 400 | Typos (`event_type` vs `event_types`) and attempts to set server-owned fields (`secret`, `circuit_state`) fail loudly |
+| D37 | Secret returned only on create and `GET /v1/endpoints/:id/secret` (`Cache-Control: no-store`); message list and publish responses omit payloads | Secrets never in list/get views; avoids 25 MB list pages |
+| D38 | Endpoint URLs stored WHATWG-normalised; the 2048-char limit applies to the normalised form | The stored form is what the worker requests; normalising can lengthen a URL |
+| D39 | JSON with `__proto__` or `constructor.prototype` → 400 `invalid_json` (`onConstructorPoisoning: 'error'`); parser messages never echoed | Prototype-pollution input is never legitimate; V8 parse errors quote the body |
+| D40 | Plan correction (step 5): `pg_terminate_backend` on idle pool connections does NOT make `/healthz` 503 — the pool drops them and recovers. Tested as "recovers without restart"; 503 tested with an unreachable DB | The plan's expectation was wrong; both behaviours are now pinned by tests |
 
 ## Known limitations / blockers
 - Docker/WSL2 not working on dev machine; Docker Compose deferred to Day 5 (validated in CI).
@@ -128,9 +141,15 @@ cleanup, auto-disable endpoints on 410 Gone.
   limit contention.
 - JSON numbers beyond 2^53 lose precision when the API parses the body in JS.
 - Endpoint signing secrets stored in plaintext (encryption at rest = future work).
+- `GET /v1/endpoints` is not paginated (an application has few endpoints).
+- Changing an endpoint's URL does not reset its circuit state.
+- Windows does not deliver SIGTERM to Node; Ctrl+C (SIGINT) triggers graceful shutdown locally.
+- If a DB connection drops during COMMIT, the client gets 503 although the commit may have
+  succeeded; retrying with the same `Idempotency-Key` resolves it safely.
 
 ## Session log
 | Date | Session | Outcome |
 |---|---|---|
 | | Day 0 | Starter files created |
 | 2026-11-11 | Day 1 planning | Architecture reviewed (R1–R16), schema + state machine finalised, plan approved with A1–A3; saved to `docs/plans/day1.md` |
+| 2026-11-11 – 11-17 | Day 1 implementation | Steps 0–9 done, one commit each. 274 tests green. Found and fixed: NULL-passing CHECK (D30), checked-out-client crash (D31), ms-truncated cursor (D33), jsonb-unstorable payloads (D34); corrected the `/healthz` test expectation (D40). Stretch (backoff/signing) moved to Day 2 |

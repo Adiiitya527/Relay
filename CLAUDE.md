@@ -42,10 +42,10 @@ relay/
 - `npm install`                  install all workspaces
 - `npm run migrate -w server`    apply SQL migrations to DATABASE_URL
 - `npm run dev:api -w server`    start API (port from env, default 3000)
-- `npm run dev:worker -w server` start delivery worker
+- `npm run dev:worker -w server` start delivery worker (not yet: Day 2)
 - `npm run create-app -w server -- <name>`  create an application and print its API key
-- `npm run dev -w mock-consumer` start mock consumer (default port 4000)
-- `npm run dev -w dashboard`     start dashboard (Vite)
+- `npm run dev -w mock-consumer` start mock consumer, default port 4000 (not yet: Day 3)
+- `npm run dev -w dashboard`     start dashboard (Vite) (not yet: Day 4)
 - `npm test -w server`           run tests against TEST_DATABASE_URL
 - `npm run typecheck`            typecheck all workspaces (must pass before commit)
 
@@ -74,6 +74,8 @@ relay/
 - ES modules, `async/await`, no callbacks. Strict TypeScript; no `any` without a comment.
 - SQL lives in the module that owns it, as parameterised queries (`$1, $2`). Never
   build SQL by string concatenation with user input.
+- Multi-statement transactions use `withTransaction()` (`server/src/db/tx.ts`), never a
+  hand-rolled `pool.connect()` / BEGIN: it guards against the checked-out-client crash (D31).
 - Validate every request body, query and param with Zod. Return errors as
   `{ "error": { "code": "snake_case", "message": "..." } }` with correct status codes.
 - Small pure functions for logic (backoff, signing, IP classification) so they are

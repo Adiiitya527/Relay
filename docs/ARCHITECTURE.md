@@ -181,7 +181,10 @@ Invariant: `LEASE_MS >= 2 * HTTP_TIMEOUT_MS + 5000` (enforced by config validati
 so Postgres kills a leaked transaction instead of letting it block the queue. The migration
 runner uses its own connection **without** `statement_timeout`, so long migrations and
 advisory-lock waits are never cancelled. Every pool has an `'error'` handler so a DB restart
-cannot crash the process.
+cannot crash the process. pg-pool removes that handler from a client while it is checked
+out, so every multi-statement transaction goes through `withTransaction()`
+(`server/src/db/tx.ts`): it attaches its own `'error'` listener for the checkout, rolls back
+on any throw, and destroys (rather than returns) a client whose connection broke.
 
 **Delivery guarantee: at-least-once.** If a worker crashes after the consumer returned
 200 but before the result was recorded, the delivery is retried. Exactly-once over HTTP is
@@ -266,7 +269,31 @@ Auth: `Authorization: Bearer <api key>` on all `/v1` routes.
 | `POST /v1/deliveries/:id/replay` | Replay one delivery |
 | `GET /healthz` | Liveness + DB check (no auth) |
 
-Publish: `payload` must be a JSON object. Fan-out creates one delivery per **enabled**
+**Conventions.** Auth runs before the body is parsed. Missing, malformed and unknown keys
+all get the same `401 unauthorized` (+ `WWW-Authenticate: Bearer`). Bodies and list query
+strings are validated with strict Zod schemas (unknown fields → 400). Errors are always
+`{ "error": { "code", "message" } }`:
+
+| Status | `code` | When |
+|---|---|---|
+| 400 | `validation_failed` | Zod failure; message names the field, e.g. `body.url: scheme must be https` |
+| 400 | `invalid_json` | Unparsable/empty JSON, or `__proto__` / `constructor.prototype` keys |
+| 401 | `unauthorized` | No valid API key |
+| 404 | `not_found` | Unknown route, or a resource that is missing **or owned by another tenant** |
+| 409 | `idempotency_key_reused` | Same key, different `event_type` or payload |
+| 413 | `payload_too_large` | Body over `MAX_PAYLOAD_BYTES` |
+| 415 | `unsupported_media_type` | Body that is not `application/json` |
+| 500 | `internal_error` | A bug; details only in the server log |
+| 503 | `database_unavailable` | Connection errors, statement timeout, too many connections (`Retry-After: 5`) |
+
+Responses: an endpoint's `secret` appears only in the create response and from
+`GET /v1/endpoints/:id/secret` (`Cache-Control: no-store`). Lists are `{ "data": [...] }`
+(messages add `next_cursor`). Publish returns `{ message, deliveries }` without echoing the
+payload; the message list omits payloads; `GET /v1/messages/:id` includes the payload and
+the deliveries (lease fields are internal and never exposed).
+
+Publish: `payload` must be a JSON object. Valid JSON that jsonb cannot store (`\u0000`, an
+unpaired surrogate) is a 400, not a 500. Fan-out creates one delivery per **enabled**
 endpoint whose `event_types` is empty or contains the event type, in the same transaction.
 
 Idempotent publish: `INSERT ... ON CONFLICT (app_id, idempotency_key) WHERE idempotency_key
@@ -277,7 +304,11 @@ equality, key-order-insensitive) → original returned with `200` and
 Keys are kept forever in this build (expiry is future work). Concurrent requests with the
 same key: the later insert waits on the unique index, then reads the winner.
 Keyset pagination is used instead of OFFSET because OFFSET gets slower and can skip/duplicate
-rows while new messages are being inserted.
+rows while new messages are being inserted. Order is `created_at DESC, id DESC` (`id` breaks
+ties between messages from one transaction); the next page is `(created_at, id) < (cursor)`,
+an index range scan on `messages_app_keyset_idx`. The cursor is base64url of
+`<created_at in epoch microseconds>|<id>`, computed in SQL: a JS `Date` keeps only
+milliseconds, and a millisecond cursor would skip rows created within the same millisecond.
 
 ## 7. Dashboard
 
@@ -338,4 +369,6 @@ Docker Compose later.
 | Consumer hangs forever | HTTP timeout → `timeout` attempt, retried |
 | Consumer returns a huge body | Read capped at 1 KB, socket closed |
 | Endpoint URL points to internal network / DNS rebinding | SSRF client blocks; attempt logged as `ssrf_blocked` |
+| DB connection dies inside a transaction | `withTransaction` catches the client `'error'` (no crash), the server rolls back, the broken client is destroyed; API returns 503. If it died during COMMIT the outcome is unknown: a retry with the same `Idempotency-Key` is safe |
+| Payload is valid JSON but jsonb can't store it (`\u0000`) | Rejected with 400 before anything is stored |
 | Database unavailable / restarted | Pool `'error'` handler prevents a crash; API returns 503 `database_unavailable`; worker logs and backs off its poll loop, then recovers; unrecorded results are redelivered after lease expiry |
