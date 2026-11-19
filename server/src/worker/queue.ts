@@ -187,3 +187,74 @@ export async function recordResult(
     return row.status === 'succeeded' ? 'succeeded' : row.status === 'dead' ? 'dead' : 'retrying';
   });
 }
+
+// ---------------------------------------------------------------------------------------
+// T4 — sweep expired leases (crash recovery)
+// ---------------------------------------------------------------------------------------
+
+export interface SweepOptions {
+  maxAttempts: number;
+  /** Rows per statement; the sweep repeats while batches come back full. */
+  batchSize?: number;
+}
+
+/**
+ * Return deliveries whose worker vanished (crash, kill -9, network partition) to the
+ * queue. Any worker may run this at any time; it is safe concurrently with other
+ * sweepers and with live workers.
+ *
+ * One statement per batch (atomic), three parts:
+ *   expired: in_flight rows whose lease ran out (DB clock), via the partial index
+ *            deliveries_lease_idx. FOR UPDATE SKIP LOCKED: a row being swept by another
+ *            sweeper, or being recorded by its worker right now, is skipped.
+ *   upd:     back to pending (the lease time already acted as the delay), or dead if the
+ *            attempt that crashed was the last allowed one. The attempt was counted at
+ *            claim time, so a payload that crashes every worker still ends up dead.
+ *            Clearing lease_token fences out the original worker (see recordResult).
+ *   INSERT:  a `lease_expired` attempt row so the crash shows in the timeline. The old
+ *            token and worker come from `expired`: RETURNING in `upd` would only show
+ *            the new values (already NULL). lease_token is UNIQUE, so a sweep and the
+ *            worker's own result can never both log the same claim.
+ *
+ * Worker-vs-sweeper race: both need the row lock. If the worker's record holds it, the
+ * sweeper skips the row (and the worker wins). If the sweeper holds it, the worker's
+ * fenced UPDATE waits, re-checks its WHERE, finds lease_token NULL and gets 0 rows
+ * (lease_lost). Either way exactly one outcome and one attempt row.
+ *
+ * Returns the number of deliveries recovered.
+ */
+export async function sweepExpiredLeases(db: Db, opts: SweepOptions): Promise<number> {
+  const batchSize = opts.batchSize ?? 100;
+  let total = 0;
+  for (;;) {
+    const { rowCount } = await db.query(
+      `WITH expired AS (
+         SELECT id, lease_token, locked_by, attempt_count
+           FROM deliveries
+          WHERE status = 'in_flight' AND locked_until < now()
+          ORDER BY locked_until
+          LIMIT $2
+            FOR UPDATE SKIP LOCKED
+       ), upd AS (
+         UPDATE deliveries d
+            SET status          = CASE WHEN d.attempt_count >= $1 THEN 'dead' ELSE 'pending' END,
+                completed_at    = CASE WHEN d.attempt_count >= $1 THEN now() END,
+                next_attempt_at = now(),
+                last_error      = 'lease expired',
+                locked_until = NULL, lease_token = NULL, locked_by = NULL, updated_at = now()
+           FROM expired x
+          WHERE d.id = x.id
+         RETURNING d.id
+       )
+       INSERT INTO delivery_attempts
+         (delivery_id, lease_token, attempt_number, worker_id, error_kind, error_message)
+       SELECT x.id, x.lease_token, x.attempt_count, x.locked_by, 'lease_expired',
+              'worker lease expired before a result was recorded'
+         FROM expired x JOIN upd USING (id)`,
+      [opts.maxAttempts, batchSize],
+    );
+    const swept = rowCount ?? 0;
+    total += swept;
+    if (swept < batchSize) return total;
+  }
+}
