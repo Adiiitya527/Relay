@@ -3,6 +3,7 @@ import type pg from 'pg';
 import type { Config } from '../config.js';
 import { registerAuth } from './auth.js';
 import { registerErrorHandling } from './errors.js';
+import { registerDeliveryRoutes } from './routes/deliveries.js';
 import { registerEndpointRoutes } from './routes/endpoints.js';
 import { registerHealthRoutes } from './routes/health.js';
 import { registerMessageRoutes } from './routes/messages.js';
@@ -49,6 +50,7 @@ export function buildApp({ config, pool, logger }: AppDeps): FastifyInstance {
       registerAuth(v1, pool);
       registerEndpointRoutes(v1, pool, config);
       registerMessageRoutes(v1, pool);
+      registerDeliveryRoutes(v1, pool);
     },
     { prefix: '/v1' },
   );
