@@ -42,7 +42,7 @@ relay/
 - `npm install`                  install all workspaces
 - `npm run migrate -w server`    apply SQL migrations to DATABASE_URL
 - `npm run dev:api -w server`    start API (port from env, default 3000)
-- `npm run dev:worker -w server` start delivery worker (not yet: Day 2)
+- `npm run dev:worker -w server` start delivery worker
 - `npm run create-app -w server -- <name>`  create an application and print its API key
 - `npm run dev -w mock-consumer` start mock consumer, default port 4000 (not yet: Day 3)
 - `npm run dev -w dashboard`     start dashboard (Vite) (not yet: Day 4)

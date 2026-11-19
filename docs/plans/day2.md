@@ -265,3 +265,21 @@ End-to-end tests (publish through `buildTestApp` → real worker → local recei
   3. Start a one-line `node:http` receiver on port 4000 that prints the headers.
   4. Create an endpoint at `http://localhost:4000/hook` and publish with curl.
   5. `GET /v1/messages/:id` shows `succeeded`. Stop the receiver and publish again to watch the retries and then `dead`.
+
+### Where implementation departed from this plan (all recorded in PROGRESS.md)
+- Process: from step 2 on, several steps per session with Claude committing each step and one
+  checkpoint report per session (agreed 2026-11-18). One commit per step was kept.
+- Step 3: IP classification uses integer arithmetic instead of `node:net` `BlockList`
+  (clearer; IPv6 needs its own parsing anyway to extract embedded IPv4) (D44).
+- Step 4: a response status outside 100–599 is treated as a failure without a stored status
+  (D52). The "public address passes" test was dropped: it would have made a real outbound
+  connection; pass-through is covered by the IP-pinning test and the classification tests.
+- Step 5: the planned negative control ("remove `SKIP LOCKED` → double-claim test fails") was
+  wrong: `FOR UPDATE` alone still prevents double claims (it waits and re-checks). The row lock
+  is pinned by the double-claim test, and `SKIP LOCKED` by a new no-wait test (D51).
+- Step 6: `recordResult` returns the outcome and `deliverOne` logs it, instead of logging
+  inside the SQL module (D53). An atomicity test (attempt INSERT fails → state change rolled
+  back) was added.
+- Step 8: added `test/worker/start.test.ts` (idempotent stop, fail-fast on an unreachable DB).
+- Manual check: the dev database needs `npm run migrate -w server` first (only `relay_test` is
+  migrated by the test setup).

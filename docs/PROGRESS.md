@@ -2,8 +2,9 @@
 
 Status legend: [x] done · [ ] pending · [~] in progress · [-] cut / deferred
 
-**Current milestone:** Day 2 — Delivery engine (in progress)
-**Next action:** Day 2 step 1 (backoff) from the approved plan `docs/plans/day2.md`.
+**Current milestone:** Day 3 — Resilience, replay, demo backend (not started)
+**Next action:** Write a short Day 3 plan (`docs/plans/day3.md`): circuit breaker with single-probe
+half-open, replay, deliveries API, mock consumer, demo script. Day 2 is complete.
 
 ---
 
@@ -33,15 +34,16 @@ Plan: `docs/plans/day1.md` (9 steps, one commit each).
 
 ## Day 2 — Delivery engine (most important day)
 - [x] Day 2 plan produced in Plan Mode, reviewed and approved (`docs/plans/day2.md`)
-- [ ] Backoff function (exponential + jitter, cap, max attempts) + unit tests
-- [ ] Standard Webhooks signing + unit tests (incl. verification helper)
-- [ ] SSRF-safe HTTP client (validated DNS lookup, IP pinning, no redirects, timeout, response cap) + tests
-- [ ] Claim query (SKIP LOCKED, lease, lease_token, LIMIT = free concurrency slots)
-- [ ] Result recording with fencing; attempt log rows
-- [ ] Lease sweeper (expired in_flight -> pending/dead, logs a `lease_expired` attempt)
-- [ ] Worker loop: poll, bounded concurrency, graceful shutdown
-- [ ] Tests: concurrent workers never double-claim; crash/lease recovery; stale-worker fencing; exhaustion -> dead
+- [x] Backoff function (exponential + jitter, cap, max attempts) + unit tests
+- [x] Standard Webhooks signing + unit tests (incl. verification helper)
+- [x] SSRF-safe HTTP client (validated DNS lookup, IP pinning, no redirects, timeout, response cap) + tests
+- [x] Claim query (SKIP LOCKED, lease, lease_token, LIMIT = free concurrency slots)
+- [x] Result recording with fencing; attempt log rows
+- [x] Lease sweeper (expired in_flight -> pending/dead, logs a `lease_expired` attempt)
+- [x] Worker loop: poll, bounded concurrency, graceful shutdown
+- [x] Tests: concurrent workers never double-claim; crash/lease recovery; stale-worker fencing; exhaustion -> dead
 - **Done when:** a published message reaches a local receiver, failures retry on schedule, and concurrency tests pass.
+- Met: 482 tests in 26 files (end-to-end worker tests publish through the API and deliver to local receivers).
 
 ## Day 3 — Resilience, replay, demo backend
 - [ ] Circuit breaker (closed / open / half_open single probe) wired into claim + result paths
@@ -127,6 +129,19 @@ cleanup, auto-disable endpoints on 410 Gone.
 | D38 | Endpoint URLs stored WHATWG-normalised; the 2048-char limit applies to the normalised form | The stored form is what the worker requests; normalising can lengthen a URL |
 | D39 | JSON with `__proto__` or `constructor.prototype` → 400 `invalid_json` (`onConstructorPoisoning: 'error'`); parser messages never echoed | Prototype-pollution input is never legitimate; V8 parse errors quote the body |
 | D40 | Plan correction (step 5): `pg_terminate_backend` on idle pool connections does NOT make `/healthz` 503 — the pool drops them and recovers. Tested as "recovers without restart"; 503 tested with an unreachable DB | The plan's expectation was wrong; both behaviours are now pinned by tests |
+| D41 | Any destination port is allowed (replaces "default ports unless configured") | IP blocking is the protection; real consumers use :8443 etc. |
+| D42 | A hostname is blocked if ANY resolved address is blocked (no filtering) | A mixed answer is an attack signal; filtering invites games with ordering/family |
+| D43 | IP-literal URLs are classified before the request | Node's `net.connect` never calls `lookup` for IP literals; without it `http://127.0.0.1/` passed (negative control: 5 tests failed) |
+| D44 | IPv4: block list of special ranges. IPv6: allow list (`2000::/3` minus documentation, 6to4, Teredo); IPv4-mapped and NAT64 judged by the embedded IPv4. Implemented with integer arithmetic, not `BlockList` | Fail closed; the URL parser writes `[::ffff:127.0.0.1]` as `[::ffff:7f00:1]`; signed bit-shifts break at 128.0.0.0 |
+| D45 | Claim `RETURNING` includes `payload::text AS body, url, secret` (`UPDATE … FROM`) | One round trip; the body is serialised once and is exactly what is signed |
+| D46 | Response excerpt / error message: UTF-8 decoded, `\u0000` stripped, ≤ 1024 code points | Postgres text rejects NUL; an unstorable excerpt would fail every record → endless redelivery |
+| D47 | Outcome decided by the status line; the 1 KB excerpt is best-effort within the same deadline; socket destroyed after | A slow or huge body cannot change or delay the outcome |
+| D48 | `agent: false` per request | No socket reuse across deliveries; every connection passes the validating lookup |
+| D49 | Logs carry delivery/message/endpoint ids, never the URL or secret | Webhook URLs often embed tokens |
+| D50 | Backoff caps the base delay, then applies ±20 % jitter (max real delay 1.2 × cap) | Clamping after jitter would re-synchronise retries at the cap |
+| D51 | Plan correction (step 5): removing only `SKIP LOCKED` does NOT cause double claims; the `FOR UPDATE` row lock + WHERE re-check does. Both halves are now pinned: double-claim test (fails without the row lock: 596 claims for 200 rows) and a no-wait test (hangs without `SKIP LOCKED`) | The plan's negative control assumed the wrong mechanism |
+| D52 | A response status outside 100–599 is a failure (`http_status`) recorded without `response_status` | llhttp accepts any 3-digit status; the DB CHECK would reject it and the record would fail forever |
+| D53 | `recordResult` returns the outcome (`succeeded / retrying / dead / lease_lost`); `deliverOne` does the logging | Queue SQL stays free of logging; one place formats delivery logs |
 
 ## Known limitations / blockers
 - Docker/WSL2 not working on dev machine; Docker Compose deferred to Day 5 (validated in CI).
@@ -147,6 +162,13 @@ cleanup, auto-disable endpoints on 410 Gone.
 - If a DB connection drops during COMMIT, the client gets 503 although the commit may have
   succeeded; retrying with the same `Idempotency-Key` resolves it safely.
 
+- Response excerpts keep only the first 1 KB of the consumer's body.
+- Each worker runs its own sweeper (cheap, concurrency-safe via SKIP LOCKED); no leader election.
+- A delivery whose endpoint secret is not valid base64 (impossible through the API) would throw in
+  signing and be recovered by lease expiry until it is dead.
+- Migrations are applied to `relay_test` by the test setup only; run `npm run migrate -w server` once
+  before using the dev database (`relay`).
+
 ## Session log
 | Date | Session | Outcome |
 |---|---|---|
@@ -154,3 +176,4 @@ cleanup, auto-disable endpoints on 410 Gone.
 | 2026-11-11 | Day 1 planning | Architecture reviewed (R1–R16), schema + state machine finalised, plan approved with A1–A3; saved to `docs/plans/day1.md` |
 | 2026-11-11 – 11-17 | Day 1 implementation | Steps 0–9 done, one commit each. 274 tests green. Found and fixed: NULL-passing CHECK (D30), checked-out-client crash (D31), ms-truncated cursor (D33), jsonb-unstorable payloads (D34); corrected the `/healthz` test expectation (D40). Stretch (backoff/signing) moved to Day 2 |
 | 2026-11-17 | Day 2 planning | Plan approved and saved to `docs/plans/day2.md` (steps 0–9, decisions D41–D50 proposed). Chosen: any destination port allowed; HTTPS tested with a committed self-signed test cert |
+| 2026-11-18 – 11-19 | Day 2 implementation | Steps 1–9 done (switched to several steps per session, Claude commits each step). 482 tests green. Found: IP literals bypass `lookup` (D43), NUL / invalid status from consumers would poison records (D46, D52), the plan's SKIP LOCKED negative control was wrong (D51) |

@@ -150,6 +150,9 @@ Loop (every `WORKER_POLL_INTERVAL_MS`, plus immediately whenever slots free up):
    FROM due WHERE d.id = due.id
    RETURNING d.id, d.message_id, d.endpoint_id, d.attempt_count, d.lease_token;
    ```
+   (Implemented in `server/src/worker/queue.ts`. The real statement also joins `messages` and
+   `endpoints` in `UPDATE … FROM` and returns `payload::text AS body, url, secret`, so the
+   worker gets everything it needs to send in the same round trip, D45.)
    `SKIP LOCKED` lets N workers run this concurrently: each skips rows another worker has
    locked instead of waiting, so no row is claimed twice and no worker blocks. After locking,
    Postgres re-checks the `WHERE` on the newest row version, so a row another worker just
@@ -172,6 +175,15 @@ Loop (every `WORKER_POLL_INTERVAL_MS`, plus immediately whenever slots free up):
    sweepers are safe): `in_flight` rows with `locked_until < now()` go back to `pending`
    (or `dead` if attempts are exhausted), and a `lease_expired` attempt row is written with
    the expired `lease_token` and `locked_by`, so crashed attempts appear in the timeline.
+
+**Loop mechanics** (`server/src/worker/worker.ts`): after a claim the loop sleeps
+`WORKER_POLL_INTERVAL_MS`, but a finishing delivery wakes it at once to fill the freed slot.
+A failing claim (database down) is logged and retried with a doubling back-off capped at 5 s.
+The sweeper runs in every worker on its own timer, first at start-up. Shutdown
+(SIGINT/SIGTERM): stop claiming and sweeping, wait up to `HTTP_TIMEOUT_MS + 5 s` for
+in-progress deliveries to finish and be recorded, then close the pool; anything unfinished
+is recovered by lease expiry. The worker pool has `min(concurrency, 18) + 2` connections:
+connections are held only for single short statements, never during HTTP.
 
 Invariant: `LEASE_MS >= 2 * HTTP_TIMEOUT_MS + 5000` (enforced by config validation; defaults
 30 s vs 10 s). Otherwise healthy slow deliveries would be swept and duplicated.
@@ -230,14 +242,29 @@ the DB clock.
 **SSRF protection.** Customer-controlled URLs mean an attacker could register
 `http://169.254.169.254/` (cloud metadata) or `http://localhost:5432` and make Relay attack
 its own network. The SSRF-safe client:
-- allows only `https:` (and `http:` when configured for dev), and default ports unless configured;
-- performs DNS resolution itself via a custom `lookup` passed to `node:http(s).request`,
-  rejecting loopback, private (10/8, 172.16/12, 192.168/16), link-local (169.254/16,
-  fe80::/10), CGNAT (100.64/10), unique-local (fc00::/7), multicast, unspecified, and
-  IPv4-mapped IPv6 forms of these;
+- allows only `https:` (and `http:` when configured for dev), on any port (D41: the IP rules
+  are the protection; real consumers use ports like 8443);
+- classifies IP-literal hosts (`http://127.0.0.1/`, `[::1]`) **before** the request, because
+  Node never calls `lookup` for an IP literal (D43);
+- performs DNS resolution itself via a custom `lookup` passed to `node:http(s).request`
+  (`server/src/delivery/http-client.ts`, the only code that calls customer URLs). If **any**
+  resolved address is disallowed, the whole hostname is blocked (D42). Rules
+  (`server/src/delivery/ip-policy.ts`, D44): IPv4 is a block list of every special range
+  (loopback, private, link-local / cloud metadata, CGNAT 100.64/10, documentation,
+  benchmarking, multicast, reserved); IPv6 is an allow list, only global unicast `2000::/3`
+  minus documentation, 6to4 and Teredo; IPv4-mapped (`::ffff:…`, which is how the URL parser
+  writes `[::ffff:127.0.0.1]`) and NAT64 (`64:ff9b::/96`) addresses are judged by the
+  embedded IPv4. Anything unparseable is blocked;
 - connects to the *validated* address (the `lookup` result is what the socket uses), which
-  defeats DNS rebinding (a hostname that resolves safely at check time, then to 127.0.0.1);
-- never follows redirects; enforces a total timeout and reads at most 1 KB of response.
+  defeats DNS rebinding (a hostname that resolves safely at check time, then to 127.0.0.1).
+  TLS still verifies the certificate against the hostname, not the pinned IP;
+- never follows redirects (a 3xx is a failure); uses a fresh connection per request
+  (`agent: false`); enforces one total deadline (DNS + connect + TLS + response) and reads
+  at most 1 KB of response, then destroys the socket. The outcome is decided by the status
+  line (D47);
+- sanitises what it stores (D46, D52): the excerpt is UTF-8 decoded, NULs stripped, ≤ 1024
+  characters; a status outside 100–599 is a failure stored without a status. Both are
+  consumer-controlled and would otherwise make the result write fail forever.
 
 `RELAY_ALLOW_PRIVATE_NETWORKS=true` relaxes the IP rule for local development only
 (the mock consumer runs on localhost). Default and test default: false.
@@ -369,6 +396,8 @@ Docker Compose later.
 | Consumer hangs forever | HTTP timeout → `timeout` attempt, retried |
 | Consumer returns a huge body | Read capped at 1 KB, socket closed |
 | Endpoint URL points to internal network / DNS rebinding | SSRF client blocks; attempt logged as `ssrf_blocked` |
+| Endpoint URL is an IP literal (`http://[::ffff:127.0.0.1]/`) | Classified before connecting (Node skips `lookup` for literals); `ssrf_blocked` |
+| Consumer returns NUL bytes or a status like 999 | Excerpt sanitised, invalid status stored as a failure without a status; the result is always storable |
 | DB connection dies inside a transaction | `withTransaction` catches the client `'error'` (no crash), the server rolls back, the broken client is destroyed; API returns 503. If it died during COMMIT the outcome is unknown: a retry with the same `Idempotency-Key` is safe |
 | Payload is valid JSON but jsonb can't store it (`\u0000`) | Rejected with 400 before anything is stored |
 | Database unavailable / restarted | Pool `'error'` handler prevents a crash; API returns 503 `database_unavailable`; worker logs and backs off its poll loop, then recovers; unrecorded results are redelivered after lease expiry |
