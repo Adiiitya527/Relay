@@ -7,6 +7,7 @@ import { registerDeliveryRoutes } from './routes/deliveries.js';
 import { registerEndpointRoutes } from './routes/endpoints.js';
 import { registerHealthRoutes } from './routes/health.js';
 import { registerMessageRoutes } from './routes/messages.js';
+import { registerMetricsRoutes } from './routes/metrics.js';
 
 export interface AppDeps {
   config: Config;
@@ -42,6 +43,7 @@ export function buildApp({ config, pool, logger }: AppDeps): FastifyInstance {
   app.decorateRequest('appId', '');
 
   registerHealthRoutes(app, pool);
+  registerMetricsRoutes(app, pool);
 
   // Everything under /v1 requires an API key. The auth hook lives inside this
   // encapsulated plugin, so it does not apply to /healthz.
