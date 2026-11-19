@@ -5,6 +5,7 @@ import { createApiClient } from './lib/api.js';
 import { createKeyStore } from './lib/auth.js';
 import { useRoute } from './lib/hooks.js';
 import type { Route } from './lib/router.js';
+import { Endpoints } from './views/Endpoints.js';
 import { Login } from './views/Login.js';
 
 function safeSessionStorage(): Storage | undefined {
@@ -96,6 +97,8 @@ function LogoutButton() {
 
 function View({ route }: { route: Route }) {
   switch (route.name) {
+    case 'endpoints':
+      return <Endpoints />;
     case 'not_found':
       return (
         <Card title="Not found">
