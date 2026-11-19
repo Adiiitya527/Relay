@@ -2,9 +2,9 @@
 
 Status legend: [x] done · [ ] pending · [~] in progress · [-] cut / deferred
 
-**Current milestone:** Day 3 — Resilience, replay, demo backend (not started)
-**Next action:** Write a short Day 3 plan (`docs/plans/day3.md`): circuit breaker with single-probe
-half-open, replay, deliveries API, mock consumer, demo script. Day 2 is complete.
+**Current milestone:** Day 4 — Dashboard (not started)
+**Next action:** Write a short Day 4 plan (`docs/plans/day4.md`) and build the dashboard (session 5).
+Day 3 is complete; the backend supports the whole demo (`npm run demo -w server`).
 
 ---
 
@@ -46,13 +46,16 @@ Plan: `docs/plans/day1.md` (9 steps, one commit each).
 - Met: 482 tests in 26 files (end-to-end worker tests publish through the API and deliver to local receivers).
 
 ## Day 3 — Resilience, replay, demo backend
-- [ ] Circuit breaker (closed / open / half_open single probe) wired into claim + result paths
-- [ ] Replay: single delivery, bulk replay of dead deliveries per endpoint
-- [ ] Deliveries API: list with filters, attempts for a delivery
-- [ ] Mock consumer: signature verification, modes (ok / fail / flaky / slow / timeout), duplicate detection, control endpoint
-- [ ] `/healthz`; `/metrics` (Prometheus text format) if time allows
-- [ ] End-to-end manual demo script works from the terminal
+Plan: `docs/plans/day3.md` (short plan, steps 0–7, two sessions).
+- [x] Circuit breaker (closed / open / half_open single probe) wired into claim + result paths
+- [x] Replay: single delivery, bulk replay of dead deliveries per endpoint
+- [x] Deliveries API: list with filters, single delivery, attempts for a delivery
+- [x] Mock consumer: signature verification, modes (ok / fail / flaky / slow / timeout), duplicate detection, control endpoint
+- [x] `/healthz` (Day 1); `/metrics` (Prometheus text format)
+- [x] End-to-end demo script works from the terminal (`npm run demo -w server`)
 - **Done when:** kill consumer -> retries + circuit opens -> restore -> circuit closes -> replay DLQ works.
+  **Met:** the demo does exactly this and is itself tested end to end. 539 server tests in 32
+  files + 20 mock-consumer tests pass; typecheck clean.
 
 ## Day 4 — Dashboard
 - [ ] Vite + React + TS + Tailwind scaffold, Vite dev proxy to API
@@ -60,7 +63,8 @@ Plan: `docs/plans/day1.md` (9 steps, one commit each).
 - [ ] Endpoints view (status, circuit state, create endpoint)
 - [ ] Messages view + message detail (deliveries per endpoint)
 - [ ] Delivery detail: attempt timeline (status code, duration, error kind)
-- [ ] Dead-letter view with single + bulk replay
+- [ ] Dead-letter view with single + bulk replay (POST without a body must not send
+      `Content-Type: application/json`, see ARCHITECTURE §6)
 - [ ] Polling refresh (every ~3s)
 - **Done when:** the full demo can be performed from the browser.
 
@@ -142,6 +146,15 @@ cleanup, auto-disable endpoints on 410 Gone.
 | D51 | Plan correction (step 5): removing only `SKIP LOCKED` does NOT cause double claims; the `FOR UPDATE` row lock + WHERE re-check does. Both halves are now pinned: double-claim test (fails without the row lock: 596 claims for 200 rows) and a no-wait test (hangs without `SKIP LOCKED`) | The plan's negative control assumed the wrong mechanism |
 | D52 | A response status outside 100–599 is a failure (`http_status`) recorded without `response_status` | llhttp accepts any 3-digit status; the DB CHECK would reject it and the record would fail forever |
 | D53 | `recordResult` returns the outcome (`succeeded / retrying / dead / lease_lost`); `deliverOne` does the logging | Queue SQL stays free of logging; one place formats delivery logs |
+| D54 | The normal claim takes only `closed` endpoints. A separate probe claim runs first: lock cooled-down endpoints `FOR UPDATE SKIP LOCKED`, promote to `half_open`, claim one due delivery each (`LATERAL … LIMIT 1`). Refines D12 | The endpoint row lock is what guarantees a single probe; one statement keeps it to one round trip |
+| D55 | `half_open` carries a probe deadline: `circuit_open_until = now() + LEASE_MS`; an expired one makes the endpoint a candidate again | Without it, a crashed or `lease_lost` probe would leave the endpoint in `half_open` forever |
+| D56 | Circuit updated inside `recordResult`'s transaction, after the attempt row; lock order delivery → endpoint; `lease_lost` leaves the circuit alone | The circuit always agrees with the attempt log; the probe claim never waits, so no deadlock |
+| D57 | Test correction (step 1): "8 concurrent claimers → 1 probe" still passed with the candidates lock removed (the race window is too short to hit). Added a test that holds one probe claim's transaction open while another claims; it fails without the lock | Same lesson as D51: a negative control must prove the test can fail |
+| D58 | Replay → 202 `{ delivery }` / `{ replayed }`; only `dead` / `succeeded`; `409 delivery_not_replayable` otherwise; status checked in the `UPDATE`'s `WHERE` | Atomic under concurrent replays (one 202, one 409, tested); never fights a worker's lease |
+| D59 | Added `GET /v1/deliveries/:id`; the µs cursor moved to `server/src/db/cursor.ts`; list filters are one statement with `($n IS NULL OR …)` | The dashboard needs a delivery view; `EXPLAIN` confirmed the folded plans use the right indexes |
+| D60 | Mock consumer is plain JS + JSDoc (`tsc --checkJs`), tested with `node:test`; verifier shares no code with `server/`. Duplicate = re-send of an id already answered 2xx; re-send after a failure = retry | Zero dependencies, runs with bare `node`; independent verifier proves interoperability (broken-verifier control fails the interop test) |
+| D61 | `/metrics`: read from Postgres per scrape, aggregate-only, unauthenticated, only partially indexed statuses (no `succeeded`); 503 when the DB is down | One source of truth; no tenant leak or label explosion; scrape cost independent of history size (index-only scans) |
+| D62 | Demo script drives running processes over HTTP, creates its own application in the DB, derives wait limits from config; sends `Content-Type` only with a body | Realistic customer path; found that an empty body declared as JSON is a 400 (kept; documented for the dashboard) |
 
 ## Known limitations / blockers
 - Docker/WSL2 not working on dev machine; Docker Compose deferred to Day 5 (validated in CI).
@@ -168,6 +181,15 @@ cleanup, auto-disable endpoints on 410 Gone.
   signing and be recovered by lease expiry until it is dead.
 - Migrations are applied to `relay_test` by the test setup only; run `npm run migrate -w server` once
   before using the dev database (`relay`).
+- Probe claim: if a promoted endpoint's only due delivery is row-locked at that instant (no Relay code
+  path does this to a pending row; e.g. an operator's open manual transaction), the endpoint becomes `half_open` without a probe and waits for the probe
+  deadline (`LEASE_MS`) before the next try. Self-healing; costs at most one lease of delay.
+- `relay_oldest_due_delivery_age_seconds` also counts deliveries held by an open circuit or a
+  disabled endpoint, so it rises during a single endpoint's outage, not only when workers lag.
+- `/metrics` is unauthenticated (like `/healthz`); restrict it at the network level in production.
+- The mock consumer keeps its state in memory (counters and duplicate memory reset on restart).
+- The demo with default timings (cooldown 30 s, HTTP timeout 10 s) takes several minutes;
+  `.env.example` lists faster demo values.
 
 ## Session log
 | Date | Session | Outcome |
@@ -177,3 +199,5 @@ cleanup, auto-disable endpoints on 410 Gone.
 | 2026-11-11 – 11-17 | Day 1 implementation | Steps 0–9 done, one commit each. 274 tests green. Found and fixed: NULL-passing CHECK (D30), checked-out-client crash (D31), ms-truncated cursor (D33), jsonb-unstorable payloads (D34); corrected the `/healthz` test expectation (D40). Stretch (backoff/signing) moved to Day 2 |
 | 2026-11-17 | Day 2 planning | Plan approved and saved to `docs/plans/day2.md` (steps 0–9, decisions D41–D50 proposed). Chosen: any destination port allowed; HTTPS tested with a committed self-signed test cert |
 | 2026-11-18 – 11-19 | Day 2 implementation | Steps 1–9 done (switched to several steps per session, Claude commits each step). 482 tests green. Found: IP literals bypass `lookup` (D43), NUL / invalid status from consumers would poison records (D46, D52), the plan's SKIP LOCKED negative control was wrong (D51) |
+| 2026-11-19 | Day 3 session 3 | Short plan (`docs/plans/day3.md`); circuit breaker with single-probe half-open and probe deadline, replay, deliveries API. 526 tests. Found: the concurrent probe test could not fail (D57) |
+| 2026-11-19 | Day 3 session 4 | Mock consumer, interop test against the real worker, demo script (tested end to end), `/metrics`, docs. 539 + 20 tests. Found: empty JSON-typed POST body is a 400 (D62) |

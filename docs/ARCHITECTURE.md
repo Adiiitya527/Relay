@@ -138,8 +138,7 @@ Loop (every `WORKER_POLL_INTERVAL_MS`, plus immediately whenever slots free up):
      JOIN endpoints e ON e.id = d.endpoint_id
      WHERE d.status = 'pending' AND d.next_attempt_at <= now()
        AND NOT e.disabled
-       AND (e.circuit_state = 'closed'
-            OR (e.circuit_state = 'open' AND e.circuit_open_until <= now()))  -- single-probe refinement: Day 3
+       AND e.circuit_state = 'closed'      -- open / half_open endpoints: probe claim only (below)
      ORDER BY d.next_attempt_at
      LIMIT $free_slots
      FOR UPDATE OF d SKIP LOCKED
@@ -213,14 +212,52 @@ max 6 attempts).
 - After `CIRCUIT_FAILURE_THRESHOLD` consecutive failures → `open` until
   `now() + CIRCUIT_COOLDOWN_MS`. The claim query skips this endpoint's deliveries, so
   they wait **without consuming attempts** (an outage should not push everything to DLQ).
-- `half_open` is a **single-probe** state. When the cooldown passes, exactly one worker wins
-  `UPDATE endpoints SET circuit_state='half_open' WHERE id=$1 AND circuit_state='open'
-  AND circuit_open_until <= now()` and claims one probe delivery; everyone else keeps
-  skipping the endpoint. Probe success → `closed` (counter reset); failure → `open` again
-  with a new cooldown. This stops a backlog from burning attempts on a stampede of probes.
-  (Final claim SQL for this is designed on Day 3.)
+- `half_open` is a **single-probe** state. The normal claim only takes deliveries of
+  `closed` endpoints. Before it, each claim runs a separate **probe claim** with the same
+  free slots (`claimProbes` in `server/src/worker/queue.ts`):
+  ```sql
+  WITH candidates AS (            -- cooled down, enabled, with a due delivery
+    SELECT e.id FROM endpoints e
+     WHERE e.circuit_state IN ('open', 'half_open') AND e.circuit_open_until <= now()
+       AND NOT e.disabled
+       AND EXISTS (SELECT 1 FROM deliveries d WHERE d.endpoint_id = e.id
+                     AND d.status = 'pending' AND d.next_attempt_at <= now())
+     ORDER BY e.circuit_open_until LIMIT $free_slots
+     FOR UPDATE SKIP LOCKED       -- the endpoint row lock: only ONE worker wins it
+  ), promoted AS (
+    UPDATE endpoints e SET circuit_state = 'half_open',
+           circuit_open_until = now() + $lease          -- the probe deadline
+      FROM candidates c WHERE e.id = c.id
+    RETURNING e.id, e.url, e.secret
+  ), probe AS (                   -- exactly one due delivery per promoted endpoint
+    SELECT x.id FROM promoted p CROSS JOIN LATERAL (
+      SELECT d.id FROM deliveries d
+       WHERE d.endpoint_id = p.id AND d.status = 'pending' AND d.next_attempt_at <= now()
+       ORDER BY d.next_attempt_at LIMIT 1 FOR UPDATE SKIP LOCKED) x
+  )
+  UPDATE deliveries d SET status = 'in_flight', … (same lease columns as the normal claim)
+    FROM probe, messages m, promoted p WHERE d.id = probe.id AND … RETURNING …;
+  ```
+  The endpoint row lock is what makes the probe single: a second worker skips the locked
+  row, and once the first commits, the endpoint is `half_open` with a deadline in the future,
+  so it is no longer a candidate. Everyone else's deliveries for that endpoint wait (they are
+  not `closed`) without spending attempts. Probe success → `closed` (counter reset); failure
+  → `open` again with a fresh cooldown.
+- **The probe deadline makes `half_open` self-healing.** `circuit_open_until` on a
+  `half_open` endpoint is `now() + LEASE_MS`. If the probe's worker crashes, or its result is
+  discarded as `lease_lost`, nobody would ever close or re-open the circuit; instead, once the
+  deadline passes, the endpoint is a candidate again and a new probe goes out. No coupling
+  with the sweeper is needed.
+- **Where the circuit is updated:** inside `recordResult`'s transaction, after the fenced
+  delivery update and the attempt row, so the circuit always agrees with the attempt log.
+  A discarded (`lease_lost`) result does not touch the circuit. Lock order is always delivery
+  row, then endpoint row; the probe claim never waits for a lock (`SKIP LOCKED`), so the two
+  paths cannot deadlock.
 - No-op circuit writes are skipped (`WHERE consecutive_failures <> 0 OR circuit_state <> 'closed'`)
   to limit contention on the endpoint row.
+- Tested by holding a probe claim's transaction open while another worker claims: it gets
+  nothing and does not block. A plain "8 concurrent claimers" test did NOT catch a missing
+  candidates lock (the window is too short to hit), so the held-open test is the real guard.
 
 Why it matters: without it, one dead endpoint with thousands of queued deliveries burns
 worker capacity on timeouts and delays healthy endpoints (the noisy-neighbour problem).
@@ -287,14 +324,16 @@ Auth: `Authorization: Bearer <api key>` on all `/v1` routes.
 | `GET /v1/endpoints/:id` | Get endpoint |
 | `PATCH /v1/endpoints/:id` | Update url / event_types / disabled |
 | `GET /v1/endpoints/:id/secret` | Reveal signing secret |
-| `POST /v1/endpoints/:id/replay-dead` | Bulk replay this endpoint's dead deliveries |
+| `POST /v1/endpoints/:id/replay-dead` | Bulk replay this endpoint's dead deliveries → 202 `{ replayed }` |
 | `POST /v1/messages` | Publish (`event_type`, `payload`, optional `Idempotency-Key` header) → 202 |
 | `GET /v1/messages` | List (keyset pagination by `created_at, id`) |
 | `GET /v1/messages/:id` | Message + its deliveries |
-| `GET /v1/deliveries` | Filter by `status`, `endpoint_id` |
-| `GET /v1/deliveries/:id/attempts` | Attempt timeline |
-| `POST /v1/deliveries/:id/replay` | Replay one delivery |
+| `GET /v1/deliveries` | List newest first, keyset-paginated; filter by `status`, `endpoint_id` (`status=dead` = the DLQ view) |
+| `GET /v1/deliveries/:id` | One delivery with its `event_type` (added on Day 3 for the dashboard) |
+| `GET /v1/deliveries/:id/attempts` | Attempt timeline, oldest first (`{ data }`; empty, not 404, before the first attempt) |
+| `POST /v1/deliveries/:id/replay` | Replay one `dead` or `succeeded` delivery → 202 `{ delivery }` |
 | `GET /healthz` | Liveness + DB check (no auth) |
+| `GET /metrics` | Prometheus text format, aggregate queue gauges (no auth; operator endpoint) |
 
 **Conventions.** Auth runs before the body is parsed. Missing, malformed and unknown keys
 all get the same `401 unauthorized` (+ `WWW-Authenticate: Bearer`). Bodies and list query
@@ -308,14 +347,43 @@ strings are validated with strict Zod schemas (unknown fields → 400). Errors a
 | 401 | `unauthorized` | No valid API key |
 | 404 | `not_found` | Unknown route, or a resource that is missing **or owned by another tenant** |
 | 409 | `idempotency_key_reused` | Same key, different `event_type` or payload |
+| 409 | `delivery_not_replayable` | Replay of a delivery that is still `pending` / `in_flight` |
 | 413 | `payload_too_large` | Body over `MAX_PAYLOAD_BYTES` |
 | 415 | `unsupported_media_type` | Body that is not `application/json` |
 | 500 | `internal_error` | A bug; details only in the server log |
 | 503 | `database_unavailable` | Connection errors, statement timeout, too many connections (`Retry-After: 5`) |
 
+A POST without a body must also omit `Content-Type: application/json`: an empty body
+declared as JSON is a 400 `invalid_json` (relevant for the replay routes).
+
 Responses: an endpoint's `secret` appears only in the create response and from
 `GET /v1/endpoints/:id/secret` (`Cache-Control: no-store`). Lists are `{ "data": [...] }`
-(messages add `next_cursor`). Publish returns `{ message, deliveries }` without echoing the
+(messages and deliveries add `next_cursor`).
+
+**Replay** (T5) sets `status = 'pending'`, `attempt_count = 0`, due now, and clears
+`completed_at` / `last_error`; the attempt history is kept (attempt identity is the
+`lease_token`, D13, so a restarted `attempt_number` never collides). The status condition is
+in the `UPDATE`'s `WHERE`, so check-and-change is atomic: of two concurrent replays exactly
+one gets 202, the other 409. Only `dead` and `succeeded` can be replayed; resetting a
+`pending` / `in_flight` row would fight the worker that holds its lease. A replay for a
+disabled endpoint stays paused, and one for an open circuit waits for the probe. Bulk
+replay is one statement whose CTE checks the endpoint belongs to the caller (404 otherwise).
+
+**Delivery list filters** are one static statement with `($n IS NULL OR column = $n)`.
+node-postgres sends unnamed statements, which Postgres plans with the actual values, so the
+unused branches fold away; `EXPLAIN` on 50 000 rows confirmed each filter combination uses
+the right index (`deliveries_app_keyset_idx`, `deliveries_endpoint_idx`). The cursor code is
+shared with the message list (`server/src/db/cursor.ts`).
+
+**`GET /metrics`** reads everything from Postgres at scrape time (no in-process counters that
+would differ per replica and reset on restart). Gauges: `relay_deliveries{status}` for
+`pending | in_flight | dead`, `relay_deliveries_due`, `relay_oldest_due_delivery_age_seconds`
+(queue lag, DB clock), `relay_endpoints{circuit_state}`, `relay_endpoints_disabled`. It is
+aggregate-only (no tenant or endpoint labels: no cross-tenant leak, fixed cardinality) and
+unauthenticated like `/healthz`, so restrict it at the network level in production. Only
+statuses with a partial index are counted (`EXPLAIN`: index-only scans); `succeeded` is the
+unbounded history and is deliberately absent. Database down → 503, a failed scrape rather
+than fake zeros. Publish returns `{ message, deliveries }` without echoing the
 payload; the message list omits payloads; `GET /v1/messages/:id` includes the payload and
 the deliveries (lease fields are internal and never exposed).
 
@@ -346,11 +414,28 @@ detail, Delivery attempt timeline, Dead-letter queue with replay. Data refreshes
 
 ## 8. Mock consumer
 
-Zero-dependency `node:http` server (default port 4000):
+Zero-dependency `node:http` server (`mock-consumer/`, default `127.0.0.1:4000`). Plain
+JavaScript with JSDoc types checked by `tsc --checkJs`, tested with `node:test`, so it runs
+with bare `node` and no build step.
 - `POST /hooks/:name` verifies the Standard Webhooks signature with its own independent
-  implementation (proves interoperability), records `webhook-id`s, and flags duplicates.
-- `POST /control` sets the mode: `ok | fail (500) | flaky (fail X %) | slow (delay) | timeout (never respond)`.
-- `GET /stats` returns received / duplicates / failures for the demo.
+  implementation (`src/verify.js`, no code shared with `server/`), checked against the
+  published test vector and, in `server/test/worker/mock-consumer.test.ts`, against live
+  traffic from the real worker (a broken verifier makes that test fail). Bad signature → 401.
+  A hook with no secret configured is accepted but counted as `unverified`.
+- Duplicates per hook: a `webhook-id` that was already answered 2xx is a **duplicate**
+  (answered 200, not re-processed); one seen before but failed is an ordinary **retry**.
+- `POST /control` `{ hook?, mode?, fail_rate?, delay_ms?, secret?, reset? }` sets behaviour
+  globally or per hook: `ok | fail (500) | flaky (fail_rate) | slow (delay_ms, then 200) |
+  timeout (never respond)`. Secrets are never echoed back.
+- `GET /stats` returns counters per hook (received, processed, failed, retries, duplicates,
+  invalid_signatures, unverified, held) and the last 50 requests.
+
+**Demo** (`npm run demo -w server`, `server/src/demo/run-demo.ts`): drives a running API,
+worker and mock consumer over HTTP and narrates: signed delivery; idempotent publish; outage
+→ circuit opens and holds the backlog → recovery; dead letter → DLQ view → bulk replay; a
+reply slower than Relay's timeout → re-sent with the same `webhook-id` → duplicate detected.
+It creates a fresh application per run and never prints the key. Its wait limits come from
+the worker config (`worstCaseDeadMs`). Tested end to end with fast timings.
 
 ## 9. Configuration (environment variables)
 
@@ -365,6 +450,11 @@ RETRY_BASE_MS=2000, RETRY_CAP_MS=600000, MAX_ATTEMPTS=6
 CIRCUIT_FAILURE_THRESHOLD=5, CIRCUIT_COOLDOWN_MS=30000
 RELAY_ALLOW_PRIVATE_NETWORKS=false, ALLOW_HTTP_ENDPOINTS=false
 LOG_LEVEL=info
+
+# mock consumer (not read by server/)
+MOCK_PORT=4000, MOCK_HOST=127.0.0.1, MOCK_SECRET (optional), MOCK_QUIET=false
+# demo script
+DEMO_API_URL (default http://127.0.0.1:$API_PORT), DEMO_MOCK_URL (default http://127.0.0.1:4000)
 ```
 
 Validation rules: `LEASE_MS >= 2 * HTTP_TIMEOUT_MS + 5000`; booleans accept only
@@ -391,6 +481,9 @@ Docker Compose later.
 | Leaked / stuck DB transaction | `idle_in_transaction_session_timeout` / `statement_timeout` terminate it |
 | Consumer got the request but Relay crashed before recording | Redelivered; consumer dedupes on `webhook-id` |
 | Endpoint down for 20 minutes | Circuit opens; deliveries wait without spending attempts; a single half-open probe closes it on recovery |
+| Worker crashes while holding the half-open probe | Probe deadline (`LEASE_MS`) passes → endpoint is a probe candidate again; the probe delivery itself is recovered by the sweeper |
+| Operator replays a delivery while another replay of it is running | Status check is in the `UPDATE`'s `WHERE`: one 202, one 409 |
+| Consumer processed the webhook but replied after Relay's timeout | Recorded as `timeout`, re-sent with the same `webhook-id`; the consumer dedupes (shown by the demo) |
 | Endpoint disabled by the operator | Deliveries paused (not fanned out / not claimed); resume on re-enable |
 | Endpoint permanently broken | Attempts exhausted → `dead`; operator replays after fix |
 | Consumer hangs forever | HTTP timeout → `timeout` attempt, retried |

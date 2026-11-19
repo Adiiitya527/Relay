@@ -64,3 +64,20 @@ Tests:
 - **Step 6** (if time allows) `GET /metrics` in Prometheus text format: delivery counts by status
   and the oldest pending age.
 - **Step 7** `docs: record Day 3 progress, decisions and commands`.
+
+## Departures from this plan (recorded after implementation)
+- Step 1: the plan's "8 concurrent claimers → exactly one probe" test could not fail: with the
+  candidates lock removed it still passed, because the claims never overlapped at the critical
+  moment. Added a test that holds one probe claim's transaction open while another worker
+  claims (PROGRESS D57).
+- Step 4: the mock consumer is plain JavaScript with JSDoc types (`tsc --checkJs`) and is
+  tested with `node:test`, so it stays zero-dependency and runs with bare `node`. Per-hook modes
+  and secrets were added (the demo needs a healthy and a failing endpoint side by side), and
+  duplicates are defined precisely: a re-send after a 2xx is a duplicate, after a failure a
+  retry. Added an interop test: the real worker delivering to the real consumer process.
+- Step 5: the demo logic lives in `server/src/demo/run-demo.ts` (tested end to end); the script
+  creates its own application. It also covers idempotent publish and a late reply detected as a
+  duplicate. Found: a body-less POST declared as JSON is a 400 (kept, documented, D62).
+- Step 6: `/metrics` reports the oldest *due* delivery's age (queue lag) rather than the oldest
+  pending one: a pending row scheduled for a later retry is not late. `succeeded` is not counted
+  (no partial index; unbounded history).
