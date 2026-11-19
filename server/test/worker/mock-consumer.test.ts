@@ -97,7 +97,7 @@ describe('mock consumer ↔ real worker', () => {
     }, { message: '5 deliveries succeeded' });
   });
 
-  it('a reply slower than Relay\'s timeout causes a re-send the consumer flags as a duplicate', async () => {
+  it('a reply slower than Relay\'s timeout causes a re-send the consumer flags as a duplicate', { timeout: 20_000 }, async () => {
     // At-least-once in action: the consumer processes the message, but its 200 arrives after
     // Relay's 500 ms deadline, so Relay records a timeout and retries with the SAME webhook-id.
     await endpointFor('slow');

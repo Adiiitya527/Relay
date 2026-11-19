@@ -6,6 +6,7 @@ import pg from 'pg';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { connectForMigrations, migrate, MigrationError } from '../../src/db/migrate.js';
 import { testDatabaseUrl } from '../helpers/test-db.js';
+import { waitFor } from '../helpers/wait.js';
 
 // The runner is tested in a scratch schema inside relay_test, so these tests never touch
 // the real schema. `-c search_path=...` makes unqualified names (schema_migrations,
@@ -188,22 +189,35 @@ describe('migrate', () => {
     });
   });
 
-  it('a connection killed mid-migration rejects cleanly instead of crashing the process', async () => {
+  it('a connection killed mid-migration rejects cleanly instead of crashing the process', { timeout: 15_000 }, async () => {
     // node-postgres emits 'error' on a Client whose connection dies; without a listener
     // Node turns that into an uncaught exception (the D31 crash class, for the runner's
     // own Client). Vitest fails the run on any uncaught error, so this test also proves
     // nothing escaped.
-    const running = migrate({ connection, dir: fixtures('slow'), logger });
-    await new Promise((resolve) => setTimeout(resolve, 150)); // inside pg_sleep(0.5)
-    const killed = await db().query(
-      `SELECT pg_terminate_backend(pid) AS ok FROM pg_stat_activity WHERE application_name = 'relay-migrate'`,
+    // Settle the promise up front, so that if an assertion below fails the migration is
+    // still awaited and cannot reject into the next test (it once did, as an unhandled
+    // "no schema has been selected" after the next test dropped the scratch schema).
+    const outcome = migrate({ connection, dir: fixtures('killable'), logger }).then(
+      () => undefined,
+      (e: unknown) => e,
     );
+    // Wait for the observable state, not a fixed time: the runner's backend is executing
+    // the migration's pg_sleep. (A fixed 150 ms sleep was flaky on a loaded machine: the
+    // runner had not reached the migration yet, so there was nothing to terminate.)
+    const pid = await waitFor(async () => {
+      const { rows } = await db().query<{ pid: number }>(
+        `SELECT pid FROM pg_stat_activity
+          WHERE application_name = 'relay-migrate' AND state = 'active' AND query LIKE '%pg_sleep%'`,
+      );
+      return rows[0]?.pid;
+    }, { timeoutMs: 4_000, message: 'the migration to be running pg_sleep' });
+    const killed = await db().query('SELECT pg_terminate_backend($1) AS ok', [pid]);
     expect(killed.rows).toEqual([{ ok: true }]);
     // The real error, naming the file. (A failing unlock in `finally` used to replace it
     // with "Client has encountered a connection error".)
-    const err = await running.catch((e: unknown) => e);
+    const err = await outcome;
     expect(err).toBeInstanceOf(MigrationError);
-    expect((err as Error).message).toContain('001_slow.sql');
+    expect((err as Error).message).toContain('001_long.sql');
     // Give a late 'error' event the chance to fire before the test ends.
     await new Promise((resolve) => setTimeout(resolve, 100));
     expect(await appliedVersions().catch(() => [])).toEqual([]);

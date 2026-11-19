@@ -54,7 +54,7 @@ describe('compiled server (dist/)', () => {
     expect(stdout).toContain('database is up to date');
   });
 
-  it('the API starts and answers /healthz', async () => {
+  it('the API starts and answers /healthz', { timeout: 20_000 }, async () => {
     const port = await freePort();
     const api = start('dist/server.js', { API_HOST: '127.0.0.1', API_PORT: String(port) });
     await waitFor(
@@ -67,7 +67,7 @@ describe('compiled server (dist/)', () => {
     expect(await (await fetch(`http://127.0.0.1:${port}/healthz`)).json()).toEqual({ status: 'ok' });
   });
 
-  it('the worker starts', async () => {
+  it('the worker starts', { timeout: 20_000 }, async () => {
     const worker = start('dist/worker/index.js', { WORKER_ID: 'dist-test' });
     await waitFor(async () => worker.output().includes('worker started'), {
       timeoutMs: 10_000,

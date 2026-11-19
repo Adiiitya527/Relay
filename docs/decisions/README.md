@@ -1,7 +1,7 @@
 # Architecture decision records
 
 Short records of the decisions that shape Relay: the context, what was decided, the
-alternatives considered, and the consequences. The full, numbered decisions log (D1–D68) is in
+alternatives considered, and the consequences. The full, numbered decisions log (D1–D72) is in
 [../PROGRESS.md](../PROGRESS.md#decisions-log); each ADR links the entries it summarises.
 
 | ADR | Decision |

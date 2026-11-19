@@ -523,3 +523,26 @@ Docker Compose later.
 | DB connection dies inside a transaction | `withTransaction` catches the client `'error'` (no crash), the server rolls back, the broken client is destroyed; API returns 503. If it died during COMMIT the outcome is unknown: a retry with the same `Idempotency-Key` is safe |
 | Payload is valid JSON but jsonb can't store it (`\u0000`) | Rejected with 400 before anything is stored |
 | Database unavailable / restarted | Pool `'error'` handler prevents a crash; API returns 503 `database_unavailable`; worker logs and backs off its poll loop, then recovers; unrecorded results are redelivered after lease expiry |
+
+## 11. Build and deployment
+
+- **Production build:** `npm run build -w server` compiles `server/src` to `server/dist`
+  (`tsconfig.build.json`, source maps). Runtime images run `node dist/…`; `tsx` is dev-only.
+- **Images** (all built from the repository root):
+  - `server/Dockerfile`: multi-stage, production dependencies only, non-root. One image runs
+    migrations, the API, the worker or the demo, depending on its command.
+  - `mock-consumer/Dockerfile`: no npm install at all.
+  - `dashboard/Dockerfile`: a Vite build served by nginx. nginx forwards `/v1` and `/healthz` to
+    `RELAY_API_UPSTREAM`, so the browser sees one origin. It sends a CSP, `nosniff` and
+    `no-referrer`, and does not forward `/metrics`.
+- **`docker-compose.yml`** (demo stack): postgres → migrate (one-shot) → api, worker,
+  mock-consumer, dashboard, plus a `demo` profile. It uses demo timings and turns on the
+  private-network and http flags, because the mock consumer is a container on the same private
+  network. Those flags are for development only.
+- **CI** (`.github/workflows/ci.yml`):
+  - a test job on Node 22 and 24 with `postgres:16`: typecheck, all test suites, both builds;
+  - a Docker job: builds the stack, starts it with `--wait`, runs the end-to-end demo inside it,
+    and smoke-tests nginx.
+- **Scaling:** run more worker containers (`--scale worker=N`); `SKIP LOCKED` keeps their
+  claims disjoint, and every worker runs a sweeper, which is safe concurrently. API replicas are
+  stateless.

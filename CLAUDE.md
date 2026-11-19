@@ -31,11 +31,14 @@ before starting any milestone. The current day's approved step-by-step plan is i
 relay/
   CLAUDE.md
   .env.example
-  docs/            ARCHITECTURE.md, PROGRESS.md, decisions/
+  docs/            ARCHITECTURE.md, PROGRESS.md, decisions/ (ADRs), plans/
   server/src/      config.ts, db/, api/, delivery/, worker/, server.ts
   server/test/     integration + unit tests
   dashboard/       React app
   mock-consumer/   demo webhook receiver with failure modes
+  .github/         CI workflow (tests + Docker stack with the demo)
+  docker-compose.yml, */Dockerfile   demo stack (validated in CI)
+  README.md        public overview; docs/decisions/ holds the ADRs
 ```
 
 ## Commands (keep this list accurate as scripts are added)

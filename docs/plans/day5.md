@@ -55,3 +55,15 @@ PROGRESS (tick Day 5, final status, limitations), CLAUDE.md commands, departures
 
 **Yours:** creating the GitHub remote and the first push (CI then runs), and the demo
 recording / screenshots.
+
+## Departures from this plan (recorded after implementation)
+- Step 1 found two bugs, each fixed in its own commit with a test (D69, D70). The logging fix
+  added `server/src/logging.ts`, used by every entry point.
+- Step 2's test also checks that a bad configuration fails fast without printing the
+  database URL.
+- Step 4: the nginx config is a template (`RELAY_API_UPSTREAM` from the environment, invariant
+  10) and sends a CSP; the built `index.html` was checked to contain no inline script or style.
+  The Dockerfiles' npm install and build steps were rehearsed locally in clean folders, because
+  Docker itself cannot run here.
+- Step 5: the README is for GitHub visitors; the step-by-step developer commands stay in
+  CLAUDE.md.

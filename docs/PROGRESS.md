@@ -2,9 +2,10 @@
 
 Status legend: [x] done · [ ] pending · [~] in progress · [-] cut / deferred
 
-**Current milestone:** Day 5 — Hardening and presentation (not started)
-**Next action:** Short Day 5 plan (`docs/plans/day5.md`): code review pass, CI, Docker, README,
-ADRs (session 6). Day 4 is complete; the whole demo can be watched from the browser.
+**Current milestone:** Day 5 complete — v1 feature-complete
+**Next action (yours):** add the GitHub remote and push; check that both CI jobs pass (tests on
+Node 22/24, and the Docker stack + end-to-end demo, which has never run on the dev machine);
+record the demo / screenshots. Session 7's remaining buffer is for anything CI turns up.
 
 ---
 
@@ -13,7 +14,7 @@ ADRs (session 6). Day 4 is complete; the whole demo can be watched from the brow
 - [x] Node, Git, PostgreSQL installed and verified (Node 26.13, PostgreSQL 18)
 - [x] Databases `relay` and `relay_test` created (role `relay`)
 - [x] Repo initialised; CLAUDE.md, docs/ARCHITECTURE.md, docs/PROGRESS.md committed
-- [ ] GitHub remote added and first push done
+- [ ] GitHub remote added and first push done (yours)
 - [x] Day 1 plan produced in Plan Mode, reviewed and approved (`docs/plans/day1.md`)
 
 ## Day 1 — Foundation: schema, API, idempotent ingestion
@@ -72,12 +73,16 @@ Plan: `docs/plans/day4.md` (short plan, steps 0–6, one session).
   dashboard tests; typecheck and production build clean.
 
 ## Day 5 — Hardening and presentation (buffer day)
-- [ ] Code review pass (race conditions, error handling, tenant scoping, SSRF)
-- [ ] README: problem, architecture diagram, guarantees, how to run, demo walkthrough, limitations
-- [ ] ADRs in docs/decisions/ for the key decisions below
-- [ ] GitHub Actions CI: typecheck + tests with a Postgres service container
-- [ ] Dockerfiles + docker-compose.yml (can be written and CI-validated even without local Docker)
-- [ ] Demo recording / screenshots
+Plan: `docs/plans/day5.md` (short plan, steps 0–7, sessions 6–7).
+- [x] Code review pass (race conditions, error handling, tenant scoping, SSRF): 2 bugs fixed (D69, D70)
+- [x] README: problem, architecture diagram, guarantees, how to run, demo walkthrough, limitations
+- [x] ADRs in docs/decisions/ for the key decisions (0001–0008)
+- [x] GitHub Actions CI: typecheck + tests with a Postgres service container (written; runs after the first push)
+- [x] Dockerfiles + docker-compose.yml, validated by a CI job that runs the demo inside the stack (D72)
+- [x] Production build: compiled JavaScript, no tsx at runtime (D71)
+- [ ] Demo recording / screenshots (yours)
+- **Met:** 557 server + 20 mock-consumer + 109 dashboard tests; typecheck, dashboard and server
+  builds clean. Pending only the first CI run and the recording.
 - **Cut first if behind:** dashboard polish, /metrics, Dockerfiles. **Never cut:** tests.
 
 ---
@@ -164,6 +169,10 @@ cleanup, auto-disable endpoints on 410 Gone.
 | D66 | Vite dev proxy for `/v1`, `/healthz`, `/metrics`; config reads only `DASHBOARD_*` from the repo `.env`; dashboard requires Node ≥ 22.12 (Vite 8) | One origin, no CORS; no server secret can reach the bundle |
 | D67 | Paged lists: every fetched page is authoritative for the range it covers | Polling + "Load more" otherwise loses rows when pages shift or keeps replayed rows in the DLQ |
 | D68 | Contract test (`server/test/api/dashboard-contract.test.ts`) runs the dashboard's real API client against the real API | API changes that break the dashboard fail the server suite, not the browser |
+| D69 | The migration runner's own `pg.Client` gets an `'error'` listener; the advisory unlock in `finally` is best effort | A connection killed mid-migration crashed the process (uncaught ECONNRESET), and the failing unlock replaced the real `MigrationError`; the session ending releases the lock anyway. Found by the Day 5 review, pinned by a test |
+| D70 | One `createLogger()` for every process: Authorization redaction plus an `err` serializer that drops PostgreSQL `detail` / `where` / `internalQuery` (also from causes) | A constraint error's `detail` is the whole failing row (payloads, response excerpts). Negative control: without the serializer the row reaches the log |
+| D71 | Production runs `server/dist` compiled by `tsconfig.build.json` (`start:api`, `start:worker`, `migrate:prod`) | Runtime images need only node and production dependencies; tested by running the compiled entry points |
+| D72 | Docker: one server image (migrate / API / worker / demo); nginx serves the dashboard and proxies `/v1` (same origin, upstream from env, CSP, `/metrics` not forwarded); compose enables the private-network flags only for its own network. Validated in CI by running the demo inside the stack | Docker does not run on the dev machine (D10); the Dockerfiles' install/build steps were rehearsed locally in clean folders |
 
 ## Known limitations / blockers
 - Docker/WSL2 not working on dev machine; Docker Compose deferred to Day 5 (validated in CI).
@@ -206,6 +215,10 @@ cleanup, auto-disable endpoints on 410 Gone.
 - Dashboard: dev server only so far; production serving (static build behind the same origin)
   comes with Docker on Day 5. Relative times ("12 s ago") use the browser clock (display only).
 - Dashboard UI has no component tests (D64); checked by tsc, the build and a manual walkthrough.
+- CI and the Docker stack have not run yet (no remote; Docker unavailable locally). Timing-based
+  tests passed consistently here but have not been tried on shared CI runners.
+- `docker-compose.yml` is a demo stack (fixed database password, development-only network flags),
+  not a production deployment.
 
 ## Session log
 | Date | Session | Outcome |
@@ -218,3 +231,5 @@ cleanup, auto-disable endpoints on 410 Gone.
 | 2026-11-19 | Day 3 session 3 | Short plan (`docs/plans/day3.md`); circuit breaker with single-probe half-open and probe deadline, replay, deliveries API. 526 tests. Found: the concurrent probe test could not fail (D57) |
 | 2026-11-19 | Day 3 session 4 | Mock consumer, interop test against the real worker, demo script (tested end to end), `/metrics`, docs. 539 + 20 tests. Found: empty JSON-typed POST body is a 400 (D62) |
 | 2026-11-19 | Day 4 session 5 | Short plan (`docs/plans/day4.md`), dashboard scaffold, client/auth/router/poller, endpoints, messages, deliveries + DLQ + timeline, contract test, docs. 546 + 20 + 109 tests. Found: Node's `RequestInit` has no `cache` (dropped; nothing to cache) |
+| 2026-11-19 | Day 5 session 6 | Short plan (`docs/plans/day5.md`); review pass found and fixed 2 bugs (D69 migration-runner crash, D70 row data in logs); compiled production build; CI workflow; Dockerfiles, nginx, compose, CI demo job. 557 + 20 + 109 tests |
+| 2026-11-20 | Day 5 session 7 | README, ADRs 0001–0008, final docs. v1 feature-complete; awaiting first push / CI run |
