@@ -7,6 +7,8 @@ import { useRoute } from './lib/hooks.js';
 import type { Route } from './lib/router.js';
 import { Endpoints } from './views/Endpoints.js';
 import { Login } from './views/Login.js';
+import { MessageDetail } from './views/MessageDetail.js';
+import { Messages } from './views/Messages.js';
 
 function safeSessionStorage(): Storage | undefined {
   try {
@@ -99,6 +101,10 @@ function View({ route }: { route: Route }) {
   switch (route.name) {
     case 'endpoints':
       return <Endpoints />;
+    case 'messages':
+      return <Messages />;
+    case 'message':
+      return <MessageDetail key={route.id} id={route.id} />;
     case 'not_found':
       return (
         <Card title="Not found">

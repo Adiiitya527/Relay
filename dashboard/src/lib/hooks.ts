@@ -2,6 +2,8 @@ import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from '
 import { isAbortError } from './api.js';
 import { createPoller, type Poller, type Visibility } from './poller.js';
 import { formatHash, parseHash, type Route } from './router.js';
+import { applyPage, emptyList, type ListState, type Row } from './paging.js';
+import type { Page } from './types.js';
 
 export const POLL_INTERVAL_MS = 3000;
 
@@ -88,4 +90,70 @@ export function useRoute(): Route {
 
 export function navigate(route: Route): void {
   window.location.hash = formatHash(route);
+}
+
+// --- paged lists -------------------------------------------------------------------------
+
+export interface PagedList<T extends Row> {
+  rows: T[];
+  loading: boolean;
+  error: unknown;
+  hasMore: boolean;
+  loadingMore: boolean;
+  loadMore: () => void;
+  refresh: () => void;
+}
+
+/**
+ * A newest-first list: the first page is polled every 3 s; "Load more" appends older pages.
+ * How the pages are merged (and why rows never vanish or linger) is in paging.ts. When `key`
+ * (the filter) changes the list starts over, and answers for the old key are dropped.
+ */
+export function usePagedList<T extends Row>(
+  fetchPage: (cursor: string | undefined, signal?: AbortSignal) => Promise<Page<T>>,
+  key: string,
+): PagedList<T> {
+  const [list, setList] = useState<{ key: string; state: ListState<T> }>({ key, state: emptyList<T>() });
+  const [more, setMore] = useState<{ loading: boolean; error: unknown }>({ loading: false, error: undefined });
+  const keyRef = useRef(key);
+  useEffect(() => {
+    keyRef.current = key;
+    setMore({ loading: false, error: undefined });
+  }, [key]);
+
+  const head = usePolled(async (signal) => {
+    const page = await fetchPage(undefined, signal);
+    if (!signal.aborted) {
+      setList((l) => ({ key, state: applyPage(l.key === key ? l.state : emptyList<T>(), page, 'head') }));
+    }
+    return true;
+  }, key);
+
+  const current = list.key === key ? list.state : emptyList<T>();
+  const cursor = current.nextCursor;
+
+  const loadMore = useCallback(() => {
+    if (!cursor) return;
+    const requestedFor = keyRef.current;
+    setMore({ loading: true, error: undefined });
+    fetchPage(cursor)
+      .then((page) => {
+        if (keyRef.current !== requestedFor) return;
+        setList((l) => (l.key === requestedFor ? { key: l.key, state: applyPage(l.state, page, 'more') } : l));
+        setMore({ loading: false, error: undefined });
+      })
+      .catch((err: unknown) => {
+        if (keyRef.current === requestedFor) setMore({ loading: false, error: err });
+      });
+  }, [cursor, fetchPage]);
+
+  return {
+    rows: current.rows,
+    loading: head.loading,
+    error: head.error ?? more.error,
+    hasMore: cursor !== null,
+    loadingMore: more.loading,
+    loadMore,
+    refresh: head.refresh,
+  };
 }
