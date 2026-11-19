@@ -1,3 +1,4 @@
+import { encodeCursor, sqlMicrosOf, sqlTimestampOfMicros, type Cursor } from '../db/cursor.js';
 import type { Db } from '../db/pool.js';
 
 /**
@@ -87,4 +88,104 @@ export async function replayDeadForEndpoint(
     [endpointId, appId],
   );
   return rows[0]!;
+}
+
+// ---------------------------------------------------------------------------------------
+// Reads: list (keyset-paginated), one delivery, attempt timeline
+// ---------------------------------------------------------------------------------------
+
+/** A delivery with its message's event type (what the dashboard lists). */
+export interface DeliveryListItem extends DeliveryView {
+  event_type: string;
+}
+
+export interface DeliveryPage {
+  data: DeliveryListItem[];
+  /** Pass back as ?cursor= for the next (older) page; null on the last page. */
+  next_cursor: string | null;
+}
+
+export interface DeliveryFilter {
+  status: DeliveryView['status'] | undefined;
+  endpointId: string | undefined;
+  limit: number;
+  cursor: Cursor | undefined;
+}
+
+const ITEM_COLUMNS = `d.id, d.message_id, d.endpoint_id, m.event_type, d.status, d.attempt_count,
+  d.next_attempt_at, d.last_error, d.created_at, d.updated_at, d.completed_at`;
+
+/**
+ * Newest first, optionally filtered by status and/or endpoint. Same keyset scheme as the
+ * message list: ORDER BY (created_at, id) DESC with a microsecond cursor (D33), so pages
+ * never skip or repeat rows and cost O(limit) at any depth.
+ *
+ * Optional filters are written `($n IS NULL OR column = $n)` in ONE static statement
+ * (8 combinations would otherwise need 8 statements). That is index-friendly here because
+ * node-postgres sends unnamed prepared statements, which Postgres plans with the actual
+ * parameter values: the `NULL OR …` branches fold away before planning. Every query is
+ * scoped by app_id; filtering by another tenant's endpoint id simply returns nothing.
+ */
+export async function listDeliveries(db: Db, appId: string, f: DeliveryFilter): Promise<DeliveryPage> {
+  const { rows } = await db.query<DeliveryListItem & { micros: string }>(
+    `SELECT ${ITEM_COLUMNS}, ${sqlMicrosOf('d.created_at')} AS micros
+       FROM deliveries d
+       JOIN messages m ON m.id = d.message_id
+      WHERE d.app_id = $1
+        AND ($2::text IS NULL OR d.status = $2)
+        AND ($3::uuid IS NULL OR d.endpoint_id = $3)
+        AND ($4::bigint IS NULL OR (d.created_at, d.id) < (${sqlTimestampOfMicros('$4')}, $5::uuid))
+      ORDER BY d.created_at DESC, d.id DESC
+      LIMIT $6`,
+    [appId, f.status ?? null, f.endpointId ?? null, f.cursor?.micros ?? null, f.cursor?.id ?? null, f.limit + 1],
+  );
+  const hasMore = rows.length > f.limit;
+  const page = rows.slice(0, f.limit);
+  const last = page.at(-1);
+  return {
+    data: page.map(({ micros: _micros, ...item }) => item),
+    next_cursor: hasMore && last ? encodeCursor({ micros: last.micros, id: last.id }) : null,
+  };
+}
+
+export async function getDelivery(db: Db, appId: string, id: string): Promise<DeliveryListItem | undefined> {
+  const { rows } = await db.query<DeliveryListItem>(
+    `SELECT ${ITEM_COLUMNS}
+       FROM deliveries d
+       JOIN messages m ON m.id = d.message_id
+      WHERE d.id = $1 AND d.app_id = $2`,
+    [id, appId],
+  );
+  return rows[0];
+}
+
+export interface AttemptView {
+  /** bigint identity, as a string (JS numbers can't hold every int8). */
+  id: string;
+  attempt_number: number;
+  worker_id: string;
+  recorded_at: Date;
+  duration_ms: number | null;
+  response_status: number | null;
+  response_excerpt: string | null;
+  error_kind: string | null;
+  error_message: string | null;
+}
+
+/**
+ * The attempt timeline, oldest first (insertion order = id order). Includes attempts from
+ * before a replay. lease_token is internal and not exposed. Scoped via the delivery's
+ * app_id; the route checks the delivery exists first so "no attempts yet" ≠ 404.
+ */
+export async function listAttempts(db: Db, appId: string, deliveryId: string): Promise<AttemptView[]> {
+  const { rows } = await db.query<AttemptView>(
+    `SELECT a.id::text AS id, a.attempt_number, a.worker_id, a.recorded_at, a.duration_ms,
+            a.response_status, a.response_excerpt, a.error_kind, a.error_message
+       FROM delivery_attempts a
+       JOIN deliveries d ON d.id = a.delivery_id
+      WHERE a.delivery_id = $1 AND d.app_id = $2
+      ORDER BY a.id`,
+    [deliveryId, appId],
+  );
+  return rows;
 }
