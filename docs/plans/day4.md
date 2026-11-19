@@ -66,3 +66,13 @@ Per step: `npm test -w server`, `npm test -w mock-consumer`, `npm test -w dashbo
 `npm run typecheck`, `npm run build -w dashboard`. At the end, walkthrough for you: run API +
 worker + mock consumer + `npm run dev -w dashboard`, log in with a `create-app` key, run the
 demo script and watch it in the browser (circuit badge flips, DLQ fills, replay drains it).
+
+## Departures from this plan (recorded after implementation)
+- Added `usePagedList` and a page-merging rule (`paging.ts`, D67): polling the first page
+  while "Load more" pages are kept needs a rule for rows that shift pages or leave a filter.
+- Added a contract test in `server/` that runs the dashboard's API client against the real API
+  (D68), after a live check through the Vite proxy passed all 17 calls the views make.
+- Dropped `cache: 'no-store'` from the client: not in Node's `RequestInit` (the contract test
+  typechecks the client under Node), and the API sends no cache validators.
+- The poller is a separate pure module with fake-timer tests; the React hooks only wire it to
+  `document.visibilityState` and component state.

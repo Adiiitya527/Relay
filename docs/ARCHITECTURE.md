@@ -407,10 +407,37 @@ milliseconds, and a millisecond cursor would skip rows created within the same m
 
 ## 7. Dashboard
 
-React + Vite + TypeScript + Tailwind. The Vite dev proxy forwards `/v1` to the API (no CORS
-setup needed in dev). Views: API-key login, Endpoints (circuit badge), Messages, Message
-detail, Delivery attempt timeline, Dead-letter queue with replay. Data refreshes by polling
-(~3 s). Minimal dependencies; no state-management or data-fetching library unless justified.
+React 19 + Vite 8 + TypeScript + Tailwind 4 (`dashboard/`). No router, state-management or
+data-fetching library: a ~60-line hash router and a polling hook cover six views.
+
+- **Views:** API-key login; Endpoints (circuit badge with probe ETA, create with the secret
+  shown once, reveal secret, enable/disable, replay dead); Messages (newest first, "Load
+  more", "Send test event"); Message detail (payload, `webhook-id`, deliveries per endpoint);
+  Deliveries (status tabs, endpoint filter; `status=dead` is the dead-letter queue with
+  per-row and per-endpoint bulk replay); Delivery detail (attempt timeline with replay
+  boundaries, 1 KB excerpts).
+- **Dev proxy:** Vite forwards `/v1`, `/healthz`, `/metrics` to `DASHBOARD_API_URL` (default
+  `http://127.0.0.1:3000`), so the browser sees one origin and the API needs no CORS. The
+  config reads only `DASHBOARD_*` from the repo `.env`; nothing reaches the browser bundle.
+  Production serving (same-origin static files) is Day 5 work.
+- **API key:** checked with `GET /v1/endpoints` before it is stored; kept in
+  `sessionStorage` (memory fallback when storage is blocked), never in a URL or log. Any
+  401 during use logs out.
+- **API client** (`src/lib/api.ts`): sends `Content-Type` only with a body (an empty body
+  declared as JSON is a 400), turns the error shape into a typed `ApiError`, explains network
+  failures and the proxy's 502. A **contract test** in `server/test/api/` runs this exact
+  client against the real API, so an API change that breaks the dashboard fails the suite.
+- **Polling** (`src/lib/poller.ts`): every 3 s, a `setTimeout` chain (never overlapping
+  requests), paused while the tab is hidden, an action triggers an immediate refresh, and a
+  view change aborts the request and drops late answers.
+- **Paging** (`src/lib/paging.ts`): the polled first page and "Load more" pages are merged
+  by treating each page as authoritative for the range it covers, so rows never vanish when
+  pages shift and a row that left the filter (a replayed dead delivery) does not linger.
+- **Rendering:** payloads, URLs and consumer response excerpts are React text (escaped); no
+  `dangerouslySetInnerHTML`.
+- **Tests:** pure logic only (agreed Day 4): API client, key store, router, poller, paging,
+  display decisions, formatting, proxy config. Views stay thin and are checked by `tsc`, the
+  production build and a manual walkthrough.
 
 ## 8. Mock consumer
 
@@ -455,6 +482,8 @@ LOG_LEVEL=info
 MOCK_PORT=4000, MOCK_HOST=127.0.0.1, MOCK_SECRET (optional), MOCK_QUIET=false
 # demo script
 DEMO_API_URL (default http://127.0.0.1:$API_PORT), DEMO_MOCK_URL (default http://127.0.0.1:4000)
+# dashboard dev server
+DASHBOARD_API_URL (default http://127.0.0.1:3000), DASHBOARD_PORT=5173
 ```
 
 Validation rules: `LEASE_MS >= 2 * HTTP_TIMEOUT_MS + 5000`; booleans accept only

@@ -2,9 +2,9 @@
 
 Status legend: [x] done · [ ] pending · [~] in progress · [-] cut / deferred
 
-**Current milestone:** Day 4 — Dashboard (not started)
-**Next action:** Write a short Day 4 plan (`docs/plans/day4.md`) and build the dashboard (session 5).
-Day 3 is complete; the backend supports the whole demo (`npm run demo -w server`).
+**Current milestone:** Day 5 — Hardening and presentation (not started)
+**Next action:** Short Day 5 plan (`docs/plans/day5.md`): code review pass, CI, Docker, README,
+ADRs (session 6). Day 4 is complete; the whole demo can be watched from the browser.
 
 ---
 
@@ -58,15 +58,18 @@ Plan: `docs/plans/day3.md` (short plan, steps 0–7, two sessions).
   files + 20 mock-consumer tests pass; typecheck clean.
 
 ## Day 4 — Dashboard
-- [ ] Vite + React + TS + Tailwind scaffold, Vite dev proxy to API
-- [ ] API-key login (kept in memory / sessionStorage)
-- [ ] Endpoints view (status, circuit state, create endpoint)
-- [ ] Messages view + message detail (deliveries per endpoint)
-- [ ] Delivery detail: attempt timeline (status code, duration, error kind)
-- [ ] Dead-letter view with single + bulk replay (POST without a body must not send
-      `Content-Type: application/json`, see ARCHITECTURE §6)
-- [ ] Polling refresh (every ~3s)
+Plan: `docs/plans/day4.md` (short plan, steps 0–6, one session).
+- [x] Vite + React + TS + Tailwind scaffold, Vite dev proxy to API
+- [x] API-key login (sessionStorage, memory fallback; validated before storing)
+- [x] Endpoints view (status, circuit state, create endpoint, reveal secret, enable/disable, replay dead)
+- [x] Messages view + message detail (deliveries per endpoint) + "Send test event"
+- [x] Delivery detail: attempt timeline (status code, duration, error kind, excerpt, replay boundaries)
+- [x] Dead-letter view with single + bulk replay (no `Content-Type` on body-less POSTs, D62)
+- [x] Polling refresh (every 3 s, paused while hidden, no overlapping requests)
 - **Done when:** the full demo can be performed from the browser.
+  **Met (pending your walkthrough):** every API call the views make passed a live check through
+  the Vite proxy, and is pinned by a contract test. 546 server + 20 mock-consumer + 109
+  dashboard tests; typecheck and production build clean.
 
 ## Day 5 — Hardening and presentation (buffer day)
 - [ ] Code review pass (race conditions, error handling, tenant scoping, SSRF)
@@ -155,6 +158,12 @@ cleanup, auto-disable endpoints on 410 Gone.
 | D60 | Mock consumer is plain JS + JSDoc (`tsc --checkJs`), tested with `node:test`; verifier shares no code with `server/`. Duplicate = re-send of an id already answered 2xx; re-send after a failure = retry | Zero dependencies, runs with bare `node`; independent verifier proves interoperability (broken-verifier control fails the interop test) |
 | D61 | `/metrics`: read from Postgres per scrape, aggregate-only, unauthenticated, only partially indexed statuses (no `succeeded`); 503 when the DB is down | One source of truth; no tenant leak or label explosion; scrape cost independent of history size (index-only scans) |
 | D62 | Demo script drives running processes over HTTP, creates its own application in the DB, derives wait limits from config; sends `Content-Type` only with a body | Realistic customer path; found that an empty body declared as JSON is a 400 (kept; documented for the dashboard) |
+| D63 | Dashboard without router / state / data-fetching libraries: hash router, a poller and a paged-list hook | Six views; the libraries would be most of the bundle and most of the concepts (ARCHITECTURE §7) |
+| D64 | Dashboard tests cover pure logic only (no jsdom / Testing Library); views stay thin | Agreed 2026-11-19: no unlisted dependencies; logic that can break is in tested modules |
+| D65 | API key in `sessionStorage` (memory fallback), checked before storing, never in URLs or logs; any 401 logs out | Tab-scoped; a revoked key cannot leave a half-working UI |
+| D66 | Vite dev proxy for `/v1`, `/healthz`, `/metrics`; config reads only `DASHBOARD_*` from the repo `.env`; dashboard requires Node ≥ 22.12 (Vite 8) | One origin, no CORS; no server secret can reach the bundle |
+| D67 | Paged lists: every fetched page is authoritative for the range it covers | Polling + "Load more" otherwise loses rows when pages shift or keeps replayed rows in the DLQ |
+| D68 | Contract test (`server/test/api/dashboard-contract.test.ts`) runs the dashboard's real API client against the real API | API changes that break the dashboard fail the server suite, not the browser |
 
 ## Known limitations / blockers
 - Docker/WSL2 not working on dev machine; Docker Compose deferred to Day 5 (validated in CI).
@@ -190,6 +199,13 @@ cleanup, auto-disable endpoints on 410 Gone.
 - The mock consumer keeps its state in memory (counters and duplicate memory reset on restart).
 - The demo with default timings (cooldown 30 s, HTTP timeout 10 s) takes several minutes;
   `.env.example` lists faster demo values.
+- Dashboard: rows fetched with "Load more" are not re-polled; their status can be stale until a
+  later page covering them is fetched (the first page is always fresh).
+- Dashboard: in the unfiltered dead-letter view, the bulk "replay all dead" buttons cover only
+  endpoints with dead rows on the loaded pages (filter by endpoint for any other).
+- Dashboard: dev server only so far; production serving (static build behind the same origin)
+  comes with Docker on Day 5. Relative times ("12 s ago") use the browser clock (display only).
+- Dashboard UI has no component tests (D64); checked by tsc, the build and a manual walkthrough.
 
 ## Session log
 | Date | Session | Outcome |
@@ -201,3 +217,4 @@ cleanup, auto-disable endpoints on 410 Gone.
 | 2026-11-18 – 11-19 | Day 2 implementation | Steps 1–9 done (switched to several steps per session, Claude commits each step). 482 tests green. Found: IP literals bypass `lookup` (D43), NUL / invalid status from consumers would poison records (D46, D52), the plan's SKIP LOCKED negative control was wrong (D51) |
 | 2026-11-19 | Day 3 session 3 | Short plan (`docs/plans/day3.md`); circuit breaker with single-probe half-open and probe deadline, replay, deliveries API. 526 tests. Found: the concurrent probe test could not fail (D57) |
 | 2026-11-19 | Day 3 session 4 | Mock consumer, interop test against the real worker, demo script (tested end to end), `/metrics`, docs. 539 + 20 tests. Found: empty JSON-typed POST body is a 400 (D62) |
+| 2026-11-19 | Day 4 session 5 | Short plan (`docs/plans/day4.md`), dashboard scaffold, client/auth/router/poller, endpoints, messages, deliveries + DLQ + timeline, contract test, docs. 546 + 20 + 109 tests. Found: Node's `RequestInit` has no `cache` (dropped; nothing to cache) |
