@@ -1,6 +1,6 @@
-import { pino } from 'pino';
 import { createApplication } from '../applications/repo.js';
 import { ConfigError, loadConfig } from '../config.js';
+import { createLogger } from '../logging.js';
 import { createPool } from '../db/pool.js';
 import { DemoError, runDemo } from '../demo/run-demo.js';
 
@@ -22,7 +22,7 @@ async function main(): Promise<void> {
   const config = loadConfig(process.env);
   const pool = createPool({
     connectionString: config.databaseUrl,
-    logger: pino({ level: 'warn' }),
+    logger: createLogger('warn'),
     max: 1,
     statementTimeoutMs: config.db.statementTimeoutMs,
     idleInTxTimeoutMs: config.db.idleInTxTimeoutMs,

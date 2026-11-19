@@ -1,6 +1,6 @@
-import { pino } from 'pino';
 import { applicationNameSchema, createApplication } from '../applications/repo.js';
 import { ConfigError, loadConfig } from '../config.js';
+import { createLogger } from '../logging.js';
 import { createPool } from '../db/pool.js';
 
 // Usage: npm run create-app -w server -- <name>
@@ -20,7 +20,7 @@ async function main(): Promise<void> {
   }
 
   const config = loadConfig(process.env);
-  const logger = pino({ level: config.logLevel });
+  const logger = createLogger(config.logLevel);
   const pool = createPool({
     connectionString: config.databaseUrl,
     logger,

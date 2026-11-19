@@ -1,6 +1,6 @@
 import { fileURLToPath } from 'node:url';
-import { pino } from 'pino';
 import { ConfigError, loadConfig } from '../config.js';
+import { createLogger } from '../logging.js';
 import { migrate } from '../db/migrate.js';
 
 // Usage: npm run migrate -w server   (applies server/migrations/*.sql to DATABASE_URL)
@@ -9,7 +9,7 @@ const MIGRATIONS_DIR = fileURLToPath(new URL('../../migrations/', import.meta.ur
 
 async function main(): Promise<void> {
   const config = loadConfig(process.env);
-  const logger = pino({ level: config.logLevel });
+  const logger = createLogger(config.logLevel);
 
   // Note: deliberately NOT createPool(): the runner opens its own connection with
   // statement_timeout disabled (plan A1).

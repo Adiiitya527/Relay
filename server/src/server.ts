@@ -1,6 +1,6 @@
-import { pino } from 'pino';
 import { startApi } from './api/start.js';
 import { ConfigError, loadConfig } from './config.js';
+import { createLogger } from './logging.js';
 
 // Entry point for the API process: `npm run dev:api -w server`.
 
@@ -8,12 +8,8 @@ const SHUTDOWN_GRACE_MS = 10_000;
 
 async function main(): Promise<void> {
   const config = loadConfig(process.env);
-  const logger = pino({
-    level: config.logLevel,
-    // Defence in depth: Fastify's default request log omits headers, but if anyone ever
-    // logs them, the API key must not end up in log storage.
-    redact: ['req.headers.authorization', 'headers.authorization'],
-  });
+  // Redacts the Authorization header and scrubs data-bearing fields from logged errors.
+  const logger = createLogger(config.logLevel);
 
   const api = await startApi(config, logger);
   logger.info({ host: api.address.address, port: api.address.port }, 'api listening');

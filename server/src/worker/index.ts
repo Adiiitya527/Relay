@@ -1,5 +1,5 @@
-import { pino } from 'pino';
 import { ConfigError, loadConfig } from '../config.js';
+import { createLogger } from '../logging.js';
 import { startWorker } from './start.js';
 
 // Entry point for the delivery worker process: `npm run dev:worker -w server`.
@@ -8,7 +8,7 @@ import { startWorker } from './start.js';
 
 async function main(): Promise<void> {
   const config = loadConfig(process.env);
-  const logger = pino({ level: config.logLevel });
+  const logger = createLogger(config.logLevel);
 
   const worker = await startWorker(config, logger);
 
