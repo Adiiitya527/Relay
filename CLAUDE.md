@@ -48,7 +48,9 @@ relay/
 - `npm test -w mock-consumer`    mock consumer tests (node:test, zero deps)
 - `npm run demo -w server`       end-to-end demo against running API + worker + mock consumer
                                  (needs ALLOW_HTTP_ENDPOINTS / RELAY_ALLOW_PRIVATE_NETWORKS=true; see .env.example)
-- `npm run dev -w dashboard`     start dashboard (Vite) (not yet: Day 4)
+- `npm run dev -w dashboard`     start dashboard (Vite, port 5173; proxies /v1 to DASHBOARD_API_URL, default http://127.0.0.1:3000)
+- `npm test -w dashboard`        dashboard logic tests (vitest)
+- `npm run build -w dashboard`   production build of the dashboard (must pass before commit)
 - `npm test -w server`           run tests against TEST_DATABASE_URL
 - `npm run typecheck`            typecheck all workspaces (must pass before commit)
 

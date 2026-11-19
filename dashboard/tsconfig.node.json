@@ -1,0 +1,9 @@
+{
+  // Build tooling that runs in Node (Vite config).
+  "extends": "../tsconfig.base.json",
+  "compilerOptions": {
+    "types": ["node"],
+    "noEmit": true
+  },
+  "include": ["vite.config.ts", "dev-proxy.ts"]
+}
