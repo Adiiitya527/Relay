@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
   attemptOutcome,
+  deadByEndpoint,
+  markReplays,
   canReplay,
   checkEndpointUrlInput,
   circuitBadge,
@@ -93,5 +95,30 @@ describe('attemptOutcome', () => {
     [{ error_kind: 'something_new', response_status: null }, 'something new', 'bad'],
   ])('%o → %s', (attempt, label, tone) => {
     expect(attemptOutcome(attempt)).toMatchObject({ label, tone });
+  });
+});
+
+describe('markReplays', () => {
+  it('marks the attempt after each replay (attempt_number restarts)', () => {
+    const marked = markReplays([1, 2, 3, 1, 1, 2].map((attempt_number) => ({ attempt_number })));
+    expect(marked.map((a) => a.afterReplay)).toEqual([false, false, false, true, true, false]);
+  });
+  it('an empty timeline stays empty', () => {
+    expect(markReplays([])).toEqual([]);
+  });
+});
+
+describe('deadByEndpoint', () => {
+  it('counts only dead rows per endpoint, most first', () => {
+    const rows = [
+      { endpoint_id: 'b', status: 'dead' as const },
+      { endpoint_id: 'a', status: 'dead' as const },
+      { endpoint_id: 'b', status: 'dead' as const },
+      { endpoint_id: 'c', status: 'pending' as const },
+    ];
+    expect(deadByEndpoint(rows)).toEqual([
+      { endpointId: 'b', shown: 2 },
+      { endpointId: 'a', shown: 1 },
+    ]);
   });
 });

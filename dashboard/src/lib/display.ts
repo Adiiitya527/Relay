@@ -107,3 +107,22 @@ export function attemptOutcome(a: Pick<Attempt, 'error_kind' | 'response_status'
       return { tone: 'bad', label: a.error_kind.replace(/_/g, ' '), title: 'Delivery failed' };
   }
 }
+
+/**
+ * The attempt timeline, oldest first, with replay boundaries marked. A replay resets the
+ * delivery's attempt_count, so attempt_number restarts at 1 (attempt identity is the
+ * lease token, PROGRESS D13): a number that does not increase means a replay happened
+ * just before that attempt.
+ */
+export function markReplays<T extends Pick<Attempt, 'attempt_number'>>(attempts: T[]): (T & { afterReplay: boolean })[] {
+  return attempts.map((a, i) => ({ ...a, afterReplay: i > 0 && a.attempt_number <= attempts[i - 1]!.attempt_number }));
+}
+
+/** Dead deliveries in view grouped by endpoint (for "replay all dead" buttons), most first. */
+export function deadByEndpoint(rows: { endpoint_id: string; status: DeliveryStatus }[]): { endpointId: string; shown: number }[] {
+  const counts = new Map<string, number>();
+  for (const r of rows) if (r.status === 'dead') counts.set(r.endpoint_id, (counts.get(r.endpoint_id) ?? 0) + 1);
+  return [...counts]
+    .map(([endpointId, shown]) => ({ endpointId, shown }))
+    .sort((a, b) => b.shown - a.shown || a.endpointId.localeCompare(b.endpointId));
+}

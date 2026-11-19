@@ -5,6 +5,8 @@ import { createApiClient } from './lib/api.js';
 import { createKeyStore } from './lib/auth.js';
 import { useRoute } from './lib/hooks.js';
 import type { Route } from './lib/router.js';
+import { Deliveries } from './views/Deliveries.js';
+import { DeliveryDetail } from './views/DeliveryDetail.js';
 import { Endpoints } from './views/Endpoints.js';
 import { Login } from './views/Login.js';
 import { MessageDetail } from './views/MessageDetail.js';
@@ -105,6 +107,10 @@ function View({ route }: { route: Route }) {
       return <Messages />;
     case 'message':
       return <MessageDetail key={route.id} id={route.id} />;
+    case 'deliveries':
+      return <Deliveries status={route.status} endpointId={route.endpointId} />;
+    case 'delivery':
+      return <DeliveryDetail key={route.id} id={route.id} />;
     case 'not_found':
       return (
         <Card title="Not found">
@@ -113,7 +119,5 @@ function View({ route }: { route: Route }) {
           </p>
         </Card>
       );
-    default:
-      return <Card title={route.name}>Coming in the next steps.</Card>;
   }
 }

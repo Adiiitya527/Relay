@@ -69,7 +69,6 @@ export function createApiClient(options: ApiClientOptions) {
         headers,
         ...(opts.body !== undefined && { body: JSON.stringify(opts.body) }),
         ...(opts.signal && { signal: opts.signal }),
-        cache: 'no-store',
       });
     } catch (err) {
       if (isAbortError(err)) throw err; // the view moved on; callers ignore this
