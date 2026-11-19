@@ -94,6 +94,11 @@ async function readMigrationFiles(dir: string): Promise<MigrationFile[]> {
  */
 export async function connectForMigrations(connection: pg.ClientConfig): Promise<pg.Client> {
   const client = new pg.Client({ ...connection, application_name: 'relay-migrate' });
+  // A Client whose connection dies emits 'error'; with no listener Node treats that as an
+  // uncaught exception and the process crashes (the D31 crash class, for this runner's own
+  // Client, which does not come from a pool). The in-flight query still rejects with the
+  // error, so migrate() reports a clean MigrationError; this listener only stops the crash.
+  client.on('error', () => undefined);
   await client.connect();
   try {
     await client.query(
@@ -118,7 +123,11 @@ export async function migrate(opts: MigrateOptions): Promise<MigrateResult> {
     try {
       return await applyPending(client, files, opts.logger);
     } finally {
-      await client.query('SELECT pg_advisory_unlock($1)', [MIGRATION_LOCK_KEY]);
+      // Best effort: if the connection died, this throws, and an exception thrown in
+      // `finally` would REPLACE the real error (e.g. which migration failed). Ignoring it
+      // is safe: a session-level advisory lock is released when the session ends, and
+      // client.end() below ends it in every case.
+      await client.query('SELECT pg_advisory_unlock($1)', [MIGRATION_LOCK_KEY]).catch(() => undefined);
     }
   } finally {
     await client.end();

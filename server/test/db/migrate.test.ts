@@ -187,4 +187,25 @@ describe('migrate', () => {
       expect(result.applied).toEqual(['001_slow.sql']);
     });
   });
+
+  it('a connection killed mid-migration rejects cleanly instead of crashing the process', async () => {
+    // node-postgres emits 'error' on a Client whose connection dies; without a listener
+    // Node turns that into an uncaught exception (the D31 crash class, for the runner's
+    // own Client). Vitest fails the run on any uncaught error, so this test also proves
+    // nothing escaped.
+    const running = migrate({ connection, dir: fixtures('slow'), logger });
+    await new Promise((resolve) => setTimeout(resolve, 150)); // inside pg_sleep(0.5)
+    const killed = await db().query(
+      `SELECT pg_terminate_backend(pid) AS ok FROM pg_stat_activity WHERE application_name = 'relay-migrate'`,
+    );
+    expect(killed.rows).toEqual([{ ok: true }]);
+    // The real error, naming the file. (A failing unlock in `finally` used to replace it
+    // with "Client has encountered a connection error".)
+    const err = await running.catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(MigrationError);
+    expect((err as Error).message).toContain('001_slow.sql');
+    // Give a late 'error' event the chance to fire before the test ends.
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(await appliedVersions().catch(() => [])).toEqual([]);
+  });
 });
