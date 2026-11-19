@@ -1,12 +1,10 @@
-import { type ChildProcess, spawn } from 'node:child_process';
-import { createInterface } from 'node:readline';
-import { fileURLToPath } from 'node:url';
 import type { FastifyInstance } from 'fastify';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createApplication } from '../../src/applications/repo.js';
 import { createWorker, type Worker } from '../../src/worker/worker.js';
 import { buildTestApp, silentLogger, testConfig } from '../helpers/app.js';
 import { useTestDb } from '../helpers/db.js';
+import { type MockConsumerProcess, mockRequest, startMockConsumer } from '../helpers/mock-consumer.js';
 import { waitFor } from '../helpers/wait.js';
 
 // Interoperability: the real worker delivers to the real mock consumer, run as a separate
@@ -15,7 +13,6 @@ import { waitFor } from '../helpers/wait.js';
 // code with server/src/delivery/signing.ts.
 
 const db = useTestDb();
-const ENTRY = fileURLToPath(new URL('../../../mock-consumer/src/index.js', import.meta.url));
 const WORKER_ENV = {
   RELAY_ALLOW_PRIVATE_NETWORKS: 'true',
   ALLOW_HTTP_ENDPOINTS: 'true',
@@ -32,7 +29,7 @@ const WORKER_ENV = {
 
 let api: FastifyInstance;
 let apiKey: string;
-let child: ChildProcess | undefined;
+let mock: MockConsumerProcess | undefined;
 let origin: string;
 let worker: Worker | undefined;
 
@@ -45,33 +42,14 @@ afterAll(async () => {
 });
 beforeEach(async () => {
   apiKey = (await createApplication(db(), 'interop')).apiKey;
-  child = spawn(process.execPath, [ENTRY], {
-    env: { ...process.env, MOCK_PORT: '0', MOCK_HOST: '127.0.0.1', MOCK_QUIET: 'true' },
-    stdio: ['ignore', 'pipe', 'inherit'],
-  });
-  // The consumer prints {"listening":"http://127.0.0.1:<port>"} once it is ready.
-  const lines = createInterface({ input: child.stdout! });
-  origin = await new Promise<string>((resolve, reject) => {
-    child!.once('exit', (code) => reject(new Error(`mock consumer exited early (${code})`)));
-    lines.on('line', (line) => {
-      try {
-        const parsed = JSON.parse(line) as { listening?: string };
-        if (parsed.listening) resolve(parsed.listening);
-      } catch {
-        // not the readiness line
-      }
-    });
-  });
+  mock = await startMockConsumer();
+  origin = mock.origin;
 });
 afterEach(async () => {
   await worker?.stop();
   worker = undefined;
-  if (child && child.exitCode === null) {
-    const exited = new Promise((resolve) => child!.once('exit', resolve));
-    child.kill();
-    await exited;
-  }
-  child = undefined;
+  await mock?.stop();
+  mock = undefined;
 });
 
 async function call(method: 'GET' | 'POST', url: string, payload?: unknown) {
@@ -85,15 +63,7 @@ async function call(method: 'GET' | 'POST', url: string, payload?: unknown) {
   return res.json();
 }
 
-async function consumer(path: string, body?: unknown): Promise<any> { // any: untyped test JSON
-  const res = await fetch(`${origin}${path}`, {
-    method: body === undefined ? 'GET' : 'POST',
-    headers: { 'content-type': 'application/json' },
-    ...(body !== undefined && { body: JSON.stringify(body) }),
-  });
-  expect(res.status).toBe(200);
-  return res.json();
-}
+const consumer = (path: string, body?: unknown) => mockRequest(origin, path, body);
 
 /** Create an endpoint at /hooks/<hook> and give the consumer its signing secret. */
 async function endpointFor(hook: string) {

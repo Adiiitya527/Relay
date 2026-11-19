@@ -46,6 +46,8 @@ relay/
 - `npm run create-app -w server -- <name>`  create an application and print its API key
 - `npm run dev -w mock-consumer` start mock consumer (MOCK_PORT, default 4000; POST /control, GET /stats)
 - `npm test -w mock-consumer`    mock consumer tests (node:test, zero deps)
+- `npm run demo -w server`       end-to-end demo against running API + worker + mock consumer
+                                 (needs ALLOW_HTTP_ENDPOINTS / RELAY_ALLOW_PRIVATE_NETWORKS=true; see .env.example)
 - `npm run dev -w dashboard`     start dashboard (Vite) (not yet: Day 4)
 - `npm test -w server`           run tests against TEST_DATABASE_URL
 - `npm run typecheck`            typecheck all workspaces (must pass before commit)
