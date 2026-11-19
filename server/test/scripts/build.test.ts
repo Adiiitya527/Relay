@@ -31,8 +31,18 @@ function start(entry: string, env: Record<string, string> = {}) {
 }
 
 beforeAll(async () => {
-  // `npm` is a .cmd shim on Windows, so run it through the shell.
-  await promisify(exec)('npm run build', { cwd: SERVER_DIR, timeout: 120_000 });
+  // `npm` is a .cmd shim on Windows, so run it through the shell. On failure, report the
+  // build's full output: this step once failed intermittently (1 in ~27 local runs) and the
+  // cause was lost, so the next occurrence must explain itself.
+  try {
+    await promisify(exec)('npm run build', { cwd: SERVER_DIR, timeout: 120_000 });
+  } catch (err) {
+    const e = err as { code?: unknown; signal?: unknown; killed?: boolean; stdout?: string; stderr?: string };
+    throw new Error(
+      `npm run build failed (code ${String(e.code)}, signal ${String(e.signal)}, killed ${String(e.killed)})\n` +
+        `--- stdout ---\n${e.stdout ?? ''}\n--- stderr ---\n${e.stderr ?? ''}`,
+    );
+  }
 }, 150_000);
 
 afterEach(async () => {
