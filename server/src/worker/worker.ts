@@ -80,7 +80,7 @@ export function createWorker({ config, pool, logger, client: injected }: WorkerD
       allowHttp: config.security.allowHttpEndpoints,
       timeoutMs: w.httpTimeoutMs,
     });
-  const deliverDeps = { pool, client, logger, workerId: w.id, retry: config.retry };
+  const deliverDeps = { pool, client, logger, workerId: w.id, retry: config.retry, circuit: config.circuit };
 
   const active = new Set<Promise<void>>();
   const claimSleeper = createSleeper();

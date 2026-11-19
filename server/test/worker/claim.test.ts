@@ -158,7 +158,7 @@ describe('claimDeliveries', () => {
         ),
       ));
 
-    it('circuit half_open (Day 3 decides who probes)', () =>
+    it('circuit half_open (its single probe is already out)', () =>
       expectNotClaimed(({ endpointId }) =>
         getPool().query(`UPDATE endpoints SET circuit_state = 'half_open' WHERE id = $1`, [endpointId]),
       ));

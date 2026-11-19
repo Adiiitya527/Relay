@@ -12,7 +12,12 @@ import { insertApp, insertDeliveryGraph, insertEndpoint, useTestDb } from '../he
 const getPool = useTestDb();
 const MAX = 3;
 const success: SendResult = { ok: true, status: 200, excerpt: 'ok', durationMs: 5 };
-const recordOpts = { maxAttempts: MAX, backoffMs: 0, workerId: 'worker-a' };
+const recordOpts = {
+  maxAttempts: MAX,
+  backoffMs: 0,
+  workerId: 'worker-a',
+  circuit: { failureThreshold: 1_000, cooldownMs: 60_000 },
+};
 
 const claim = (limit = 1, workerId = 'worker-a') =>
   claimDeliveries(getPool(), { limit, leaseMs: 30_000, workerId });

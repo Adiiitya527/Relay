@@ -249,6 +249,35 @@ describe('worker end to end', () => {
     expect(await deliveryStatuses(message.id)).toEqual(['succeeded']);
   });
 
+  it('circuit breaker: an outage opens the circuit, the backlog waits, recovery drains it', async () => {
+    let healthy = false;
+    const consumer = await receiver((_req, res) => res.writeHead(healthy ? 200 : 503).end());
+    const endpoint = await createEndpoint(consumer.origin);
+    const ids: string[] = [];
+    for (let i = 0; i < 4; i++) ids.push((await publish({ i })).message.id);
+    startWorker({
+      WORKER_CONCURRENCY: '1', // one request at a time: the sequence is deterministic
+      CIRCUIT_FAILURE_THRESHOLD: '2',
+      CIRCUIT_COOLDOWN_MS: '400',
+      MAX_ATTEMPTS: '10',
+    });
+
+    // Two failures open the circuit; then only one probe per 400 ms cooldown.
+    await waitFor(async () => (await call('GET', `/v1/endpoints/${endpoint.id}`)).circuit_state === 'open', {
+      message: 'circuit to open',
+    });
+    await new Promise((resolve) => setTimeout(resolve, 1_000));
+    // Without the breaker, 4 deliveries × fast retries would have made ~40 requests and
+    // gone dead by now. With it: 2 to open + about one probe per cooldown.
+    expect(consumer.requests.length).toBeLessThanOrEqual(6);
+    // Nothing went dead (a probe may be in flight at this very moment).
+    for (const id of ids) expect(['pending', 'in_flight']).toContain((await deliveryStatuses(id))[0]);
+
+    healthy = true; // the endpoint recovers: the next probe succeeds and closes the circuit
+    for (const id of ids) await settled(id, ['succeeded']);
+    expect((await call('GET', `/v1/endpoints/${endpoint.id}`)).circuit_state).toBe('closed');
+  });
+
   it('never runs more requests at once than WORKER_CONCURRENCY', async () => {
     let open = 0;
     let peak = 0;

@@ -4,7 +4,12 @@ import { claimDeliveries, recordResult, type ClaimedDelivery } from '../../src/w
 import { insertDeliveryGraph, useTestDb } from '../helpers/db.js';
 
 const getPool = useTestDb();
-const opts = { maxAttempts: 3, backoffMs: 60_000, workerId: 'worker-a' };
+const opts = {
+  maxAttempts: 3,
+  backoffMs: 60_000,
+  workerId: 'worker-a',
+  circuit: { failureThreshold: 1_000, cooldownMs: 60_000 }, // never opens here; see circuit.test.ts
+};
 
 const success: SendResult = { ok: true, status: 200, excerpt: 'thanks', durationMs: 42 };
 const http503: SendResult = {

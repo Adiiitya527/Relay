@@ -37,7 +37,19 @@ export interface ClaimOptions {
 }
 
 /**
- * Atomically take up to `limit` due deliveries and lease them to this worker.
+ * Take up to `limit` due deliveries and lease them to this worker: first circuit-breaker
+ * probes (at most one per cooled-down endpoint), then ordinary deliveries for endpoints
+ * whose circuit is closed. Each part is one statement = one short implicit transaction.
+ */
+export async function claimDeliveries(db: Db, opts: ClaimOptions): Promise<ClaimedDelivery[]> {
+  if (opts.limit <= 0) return [];
+  const probes = await claimProbes(db, opts);
+  const normal = await claimClosed(db, { ...opts, limit: opts.limit - probes.length });
+  return [...probes, ...normal];
+}
+
+/**
+ * Ordinary claim: endpoints whose circuit is CLOSED.
  *
  * One statement = one short implicit transaction (invariant 3): the row locks below are
  * released as soon as it commits, long before any HTTP request starts. From then on the
@@ -46,7 +58,7 @@ export interface ClaimOptions {
  *  (a) `due` CTE: find candidates via the partial index deliveries_claim_idx
  *      (next_attempt_at WHERE status = 'pending'). `now()` is the DB clock (invariant 7).
  *  (b) Paused rows are skipped and keep their attempts (invariant 9): disabled endpoints,
- *      and open circuits still cooling down. (Single-probe half-open: Day 3.)
+ *      and every circuit that is not closed (open ones are tried only via claimProbes).
  *  (c) FOR UPDATE OF d SKIP LOCKED: row-lock the chosen deliveries; rows another worker's
  *      claim has locked right now are SKIPPED instead of waited for, so concurrent
  *      workers get disjoint sets without blocking each other. After acquiring a lock,
@@ -59,7 +71,7 @@ export interface ClaimOptions {
  *  (e) D45: UPDATE … FROM joins the message and endpoint so RETURNING hands the worker
  *      everything it needs to send (body, url, secret) in the same round trip.
  */
-export async function claimDeliveries(db: Db, opts: ClaimOptions): Promise<ClaimedDelivery[]> {
+async function claimClosed(db: Db, opts: ClaimOptions): Promise<ClaimedDelivery[]> {
   if (opts.limit <= 0) return [];
   const { rows } = await db.query<ClaimedDelivery>(
     `WITH due AS (
@@ -69,8 +81,7 @@ export async function claimDeliveries(db: Db, opts: ClaimOptions): Promise<Claim
         WHERE d.status = 'pending'
           AND d.next_attempt_at <= now()
           AND NOT e.disabled
-          AND (e.circuit_state = 'closed'
-               OR (e.circuit_state = 'open' AND e.circuit_open_until <= now()))
+          AND e.circuit_state = 'closed'
         ORDER BY d.next_attempt_at
         LIMIT $1
           FOR UPDATE OF d SKIP LOCKED
@@ -93,6 +104,85 @@ export async function claimDeliveries(db: Db, opts: ClaimOptions): Promise<Claim
   return rows;
 }
 
+/**
+ * Half-open, single probe (ARCHITECTURE §4, D12). When an open circuit's cooldown has
+ * passed, exactly ONE delivery is sent as a probe; everyone else keeps skipping the
+ * endpoint until the probe's result closes or re-opens the circuit.
+ *
+ *  candidates: endpoints due for a probe: `open` with the cooldown over, or `half_open`
+ *              whose probe deadline passed (its probe was lost: worker crash or lease
+ *              lost). Only endpoints that actually have a due delivery, so we never park
+ *              an endpoint in half_open with nothing to send. FOR UPDATE SKIP LOCKED:
+ *              if another worker is promoting the same endpoint right now, skip it. This
+ *              lock is what makes the probe single: only one statement can win the row.
+ *  promoted:   → half_open, with circuit_open_until = now() + lease as the PROBE DEADLINE.
+ *              The deadline makes half_open self-healing: no probe result by then means
+ *              another probe is allowed (see candidates).
+ *  probe:      exactly one due delivery per promoted endpoint (LATERAL … LIMIT 1).
+ *              SKIP LOCKED again: if that row is locked we get none this time, and the
+ *              deadline lets the endpoint be probed again later.
+ *  UPDATE:     the same lease as an ordinary claim. url/secret come from `promoted`
+ *              (RETURNING), not the endpoints table, which this statement's snapshot sees
+ *              unmodified.
+ *
+ * Locks are only ever taken with SKIP LOCKED here, so this statement never waits and
+ * cannot be part of a deadlock with result writes (which lock delivery, then endpoint).
+ */
+async function claimProbes(db: Db, opts: ClaimOptions): Promise<ClaimedDelivery[]> {
+  const { rows } = await db.query<ClaimedDelivery>(
+    `WITH candidates AS (
+       SELECT e.id
+         FROM endpoints e
+        WHERE e.circuit_state IN ('open', 'half_open')
+          AND e.circuit_open_until <= now()
+          AND NOT e.disabled
+          AND EXISTS (SELECT 1 FROM deliveries d
+                       WHERE d.endpoint_id = e.id
+                         AND d.status = 'pending'
+                         AND d.next_attempt_at <= now())
+        ORDER BY e.circuit_open_until
+        LIMIT $1
+          FOR UPDATE SKIP LOCKED
+     ), promoted AS (
+       UPDATE endpoints e
+          SET circuit_state      = 'half_open',
+              circuit_open_until = now() + ($2::bigint * interval '1 millisecond'),
+              updated_at         = now()
+         FROM candidates c
+        WHERE e.id = c.id
+       RETURNING e.id, e.url, e.secret
+     ), probe AS (
+       SELECT x.id
+         FROM promoted p
+        CROSS JOIN LATERAL (
+          SELECT d.id
+            FROM deliveries d
+           WHERE d.endpoint_id = p.id
+             AND d.status = 'pending'
+             AND d.next_attempt_at <= now()
+           ORDER BY d.next_attempt_at
+           LIMIT 1
+             FOR UPDATE SKIP LOCKED
+        ) x
+     )
+     UPDATE deliveries d
+        SET status        = 'in_flight',
+            locked_until  = now() + ($2::bigint * interval '1 millisecond'),
+            lease_token   = gen_random_uuid(),
+            locked_by     = $3,
+            attempt_count = d.attempt_count + 1,
+            updated_at    = now()
+       FROM probe, messages m, promoted p
+      WHERE d.id = probe.id
+        AND m.id = d.message_id
+        AND p.id = d.endpoint_id
+     RETURNING d.id, d.message_id, d.endpoint_id, d.attempt_count, d.lease_token,
+               m.payload::text AS body, p.url, p.secret`,
+    [opts.limit, opts.leaseMs, opts.workerId],
+  );
+  return rows;
+}
+
 // ---------------------------------------------------------------------------------------
 // T2 / T3 — record the result of an attempt, fenced by the lease token
 // ---------------------------------------------------------------------------------------
@@ -106,6 +196,8 @@ export interface RecordOptions {
   /** Delay before the next attempt if this one failed (computeBackoffMs, pure TS). */
   backoffMs: number;
   workerId: string;
+  /** CIRCUIT_FAILURE_THRESHOLD / CIRCUIT_COOLDOWN_MS. */
+  circuit: { failureThreshold: number; cooldownMs: number };
 }
 
 /** Short human-readable summary kept on the delivery row (the attempt row has details). */
@@ -130,9 +222,14 @@ function lastError(result: Extract<SendResult, { ok: false }>): string {
  *    the row's own attempt_count atomically with the update.
  * 2. Only if (1) matched: append the attempt row, keyed by the claim's lease_token
  *    (UNIQUE: one attempt row per claim, D13).
+ * 3. Update the endpoint's circuit breaker from this result (see updateCircuit).
  *
- * Both commit together or not at all: never a state change without its attempt row, or
- * the reverse. Zero rows in (1) → 'lease_lost'; the caller logs it, nothing is written.
+ * All commit together or not at all: never a state change without its attempt row, or a
+ * circuit change the attempt log doesn't explain. Zero rows in (1) → 'lease_lost': the
+ * result is discarded, including its effect on the circuit.
+ *
+ * Lock order is always delivery row (1), then endpoint row (3), in every result write,
+ * and claims never wait for locks, so result writes cannot deadlock each other or claims.
  */
 export async function recordResult(
   pool: pg.Pool,
@@ -142,15 +239,15 @@ export async function recordResult(
 ): Promise<RecordOutcome> {
   return withTransaction(pool, async (client) => {
     const updated = result.ok
-      ? await client.query<{ status: string }>(
+      ? await client.query<{ status: string; endpoint_id: string }>(
           `UPDATE deliveries
               SET status = 'succeeded', completed_at = now(), last_error = NULL,
                   locked_until = NULL, lease_token = NULL, locked_by = NULL, updated_at = now()
             WHERE id = $1 AND lease_token = $2 AND status = 'in_flight'
-           RETURNING status`,
+           RETURNING status, endpoint_id`,
           [claim.id, claim.lease_token],
         )
-      : await client.query<{ status: string }>(
+      : await client.query<{ status: string; endpoint_id: string }>(
           `UPDATE deliveries
               SET status          = CASE WHEN attempt_count >= $3 THEN 'dead' ELSE 'pending' END,
                   next_attempt_at = CASE WHEN attempt_count >= $3 THEN next_attempt_at
@@ -159,7 +256,7 @@ export async function recordResult(
                   last_error = $5,
                   locked_until = NULL, lease_token = NULL, locked_by = NULL, updated_at = now()
             WHERE id = $1 AND lease_token = $2 AND status = 'in_flight'
-           RETURNING status`,
+           RETURNING status, endpoint_id`,
           [claim.id, claim.lease_token, opts.maxAttempts, opts.backoffMs, lastError(result)],
         );
 
@@ -184,8 +281,53 @@ export async function recordResult(
       ],
     );
 
+    await updateCircuit(client, row.endpoint_id, result.ok, opts.circuit);
+
     return row.status === 'succeeded' ? 'succeeded' : row.status === 'dead' ? 'dead' : 'retrying';
   });
+}
+
+/**
+ * Circuit breaker transitions on a recorded result (ARCHITECTURE §4). In SET, every
+ * column reference reads the row's OLD values, so `circuit_state = 'half_open'` below
+ * means "it WAS half_open", i.e. this result is the probe's.
+ *
+ *  success → closed, counter reset. Skipped when already closed with 0 failures: the
+ *            common case writes nothing, which keeps contention on the endpoint row low.
+ *  failure → counter + 1, and open for CIRCUIT_COOLDOWN_MS if the probe failed or the
+ *            counter reached the threshold. While open, the claim skips the endpoint's
+ *            deliveries entirely, so they wait without spending attempts (invariant 9).
+ */
+async function updateCircuit(
+  client: pg.PoolClient,
+  endpointId: string,
+  succeeded: boolean,
+  circuit: RecordOptions['circuit'],
+): Promise<void> {
+  if (succeeded) {
+    await client.query(
+      `UPDATE endpoints
+          SET circuit_state = 'closed', consecutive_failures = 0, circuit_open_until = NULL,
+              updated_at = now()
+        WHERE id = $1 AND (circuit_state <> 'closed' OR consecutive_failures <> 0)`,
+      [endpointId],
+    );
+    return;
+  }
+  await client.query(
+    `UPDATE endpoints
+        SET consecutive_failures = consecutive_failures + 1,
+            circuit_state = CASE
+              WHEN circuit_state = 'half_open' OR consecutive_failures + 1 >= $2 THEN 'open'
+              ELSE circuit_state END,
+            circuit_open_until = CASE
+              WHEN circuit_state = 'half_open' OR consecutive_failures + 1 >= $2
+                THEN now() + ($3::bigint * interval '1 millisecond')
+              ELSE circuit_open_until END,
+            updated_at = now()
+      WHERE id = $1`,
+    [endpointId, circuit.failureThreshold, circuit.cooldownMs],
+  );
 }
 
 // ---------------------------------------------------------------------------------------

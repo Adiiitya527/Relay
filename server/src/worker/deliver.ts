@@ -13,6 +13,7 @@ export interface DeliverDeps {
   logger: Logger;
   workerId: string;
   retry: { baseMs: number; capMs: number; maxAttempts: number };
+  circuit: { failureThreshold: number; cooldownMs: number };
   /** Worker clock for webhook-timestamp only (invariant 7 exception). Injectable for tests. */
   nowMs?: () => number;
 }
@@ -55,6 +56,7 @@ export async function deliverOne(claim: ClaimedDelivery, deps: DeliverDeps): Pro
   const backoffMs = result.ok ? 0 : computeBackoffMs(claim.attempt_count, deps.retry);
   const outcome = await recordResult(deps.pool, claim, result, {
     maxAttempts: deps.retry.maxAttempts,
+    circuit: deps.circuit,
     backoffMs,
     workerId: deps.workerId,
   });
