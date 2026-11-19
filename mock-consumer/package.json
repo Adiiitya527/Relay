@@ -2,6 +2,17 @@
   "name": "@relay/mock-consumer",
   "version": "0.1.0",
   "private": true,
-  "description": "Demo webhook receiver with failure modes (implemented on Day 3; zero runtime dependencies)",
-  "type": "module"
+  "description": "Demo webhook receiver with failure modes (zero runtime dependencies)",
+  "type": "module",
+  "engines": {
+    "node": ">=22.9"
+  },
+  "scripts": {
+    "dev": "node src/index.js",
+    "test": "node --test test/",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.5"
+  }
 }

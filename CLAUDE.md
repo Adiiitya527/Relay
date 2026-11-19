@@ -44,7 +44,8 @@ relay/
 - `npm run dev:api -w server`    start API (port from env, default 3000)
 - `npm run dev:worker -w server` start delivery worker
 - `npm run create-app -w server -- <name>`  create an application and print its API key
-- `npm run dev -w mock-consumer` start mock consumer, default port 4000 (not yet: Day 3)
+- `npm run dev -w mock-consumer` start mock consumer (MOCK_PORT, default 4000; POST /control, GET /stats)
+- `npm test -w mock-consumer`    mock consumer tests (node:test, zero deps)
 - `npm run dev -w dashboard`     start dashboard (Vite) (not yet: Day 4)
 - `npm test -w server`           run tests against TEST_DATABASE_URL
 - `npm run typecheck`            typecheck all workspaces (must pass before commit)
