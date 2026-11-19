@@ -14,7 +14,11 @@
     "create-app": "node --env-file-if-exists=../.env --import tsx src/scripts/create-app.ts",
     "dev:api": "node --env-file-if-exists=../.env --import tsx src/server.ts",
     "dev:worker": "node --env-file-if-exists=../.env --import tsx src/worker/index.ts",
-    "demo": "node --env-file-if-exists=../.env --import tsx src/scripts/demo.ts"
+    "demo": "node --env-file-if-exists=../.env --import tsx src/scripts/demo.ts",
+    "build": "tsc -p tsconfig.build.json",
+    "start:api": "node --env-file-if-exists=../.env --enable-source-maps dist/server.js",
+    "start:worker": "node --env-file-if-exists=../.env --enable-source-maps dist/worker/index.js",
+    "migrate:prod": "node --env-file-if-exists=../.env --enable-source-maps dist/scripts/migrate.js"
   },
   "dependencies": {
     "fastify": "^5.12.8",

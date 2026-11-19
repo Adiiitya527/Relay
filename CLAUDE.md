@@ -51,6 +51,8 @@ relay/
 - `npm run dev -w dashboard`     start dashboard (Vite, port 5173; proxies /v1 to DASHBOARD_API_URL, default http://127.0.0.1:3000)
 - `npm test -w dashboard`        dashboard logic tests (vitest)
 - `npm run build -w dashboard`   production build of the dashboard (must pass before commit)
+- `npm run build -w server`      compile server/src to server/dist (production; no tsx needed)
+- `npm run start:api -w server` / `start:worker` / `migrate:prod`  run the compiled API / worker / migrations
 - `npm test -w server`           run tests against TEST_DATABASE_URL
 - `npm run typecheck`            typecheck all workspaces (must pass before commit)
 

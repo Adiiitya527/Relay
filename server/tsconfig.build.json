@@ -1,0 +1,13 @@
+{
+  // Production build: compiles src/ (never tests) to dist/, so the runtime image needs only
+  // `node` and the runtime dependencies, not tsx.
+  "extends": "../tsconfig.base.json",
+  "compilerOptions": {
+    "types": ["node"],
+    "rootDir": "src",
+    "outDir": "dist",
+    "noEmit": false,
+    "sourceMap": true
+  },
+  "include": ["src/**/*.ts"]
+}
