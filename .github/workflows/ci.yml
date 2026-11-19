@@ -60,3 +60,38 @@ jobs:
         run: npm run build -w dashboard
       - name: Server production build
         run: npm run build -w server
+
+  docker:
+    # Docker does not run on the development machine (PROGRESS D10), so the images, the
+    # compose file and the whole stack are validated here: build, start, run the end-to-end
+    # demo inside the stack, and smoke-test the dashboard's nginx (static files, API proxy,
+    # security headers).
+    name: Docker stack + end-to-end demo
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate the compose file
+        run: docker compose config --quiet
+      - name: Build images
+        run: docker compose --profile demo build
+      - name: Start the stack
+        run: docker compose up -d --wait --wait-timeout 180 api worker mock-consumer dashboard
+      - name: Run the end-to-end demo inside the stack
+        run: docker compose --profile demo run --rm demo
+      - name: Smoke-test the dashboard container
+        run: |
+          set -euo pipefail
+          curl -fsS http://localhost:8080/ | grep -q '<div id="root">'
+          curl -fsS http://localhost:8080/healthz | grep -q '"status":"ok"'
+          curl -fsS http://localhost:8080/messages/anything | grep -q '<div id="root">'   # SPA fallback
+          curl -fsSI http://localhost:8080/ | grep -qi "content-security-policy: default-src 'self'"
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/v1/endpoints)" = 401
+          ! curl -s http://localhost:8080/metrics | grep -q relay_deliveries                 # not forwarded
+          curl -fsS http://localhost:3000/metrics | grep -q '^relay_deliveries{status="dead"}'
+      - name: Logs on failure
+        if: failure()
+        run: docker compose logs --no-color --tail 200
+      - name: Tear down
+        if: always()
+        run: docker compose --profile demo down -v

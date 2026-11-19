@@ -55,6 +55,8 @@ relay/
 - `npm run start:api -w server` / `start:worker` / `migrate:prod`  run the compiled API / worker / migrations
 - `npm test -w server`           run tests against TEST_DATABASE_URL
 - `npm run typecheck`            typecheck all workspaces (must pass before commit)
+- `docker compose up --build`    whole stack (dashboard :8080, API :3000, mock :4000); validated in CI only (D10)
+- `docker compose --profile demo run --rm demo`  end-to-end demo inside the stack
 
 ## Architecture invariants (never violate)
 1. PostgreSQL is the single source of truth AND the queue. No other state store.

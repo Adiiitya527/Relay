@@ -1,0 +1,39 @@
+# Rendered by the nginx image at start-up (envsubst): ${RELAY_API_UPSTREAM} comes from the
+# environment. Only variables that are set are substituted, so nginx's own $vars are kept.
+server {
+    listen 80;
+    server_name _;
+    root /usr/share/nginx/html;
+
+    # The dashboard renders untrusted text (payloads, consumer responses) only as text; the
+    # CSP is a second line of defence: same-origin scripts, styles and API calls only.
+    add_header Content-Security-Policy "default-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'" always;
+    add_header X-Content-Type-Options nosniff always;
+    add_header Referrer-Policy no-referrer always;
+
+    # Same-origin API: the browser never talks to the API host directly.
+    location /v1/ {
+        proxy_pass ${RELAY_API_UPSTREAM};
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_read_timeout 30s;
+    }
+    location = /healthz {
+        proxy_pass ${RELAY_API_UPSTREAM};
+    }
+    # /metrics is deliberately NOT forwarded: it is an operator endpoint (scrape the API).
+
+    # Hashed, immutable build assets.
+    location /assets/ {
+        add_header Cache-Control "public, max-age=31536000, immutable" always;
+        add_header X-Content-Type-Options nosniff always;
+        try_files $uri =404;
+    }
+    location / {
+        add_header Cache-Control "no-cache" always;
+        add_header Content-Security-Policy "default-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'" always;
+        add_header X-Content-Type-Options nosniff always;
+        add_header Referrer-Policy no-referrer always;
+        try_files $uri /index.html;
+    }
+}

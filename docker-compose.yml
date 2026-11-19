@@ -1,0 +1,137 @@
+# Relay, the whole stack, for local demos and CI:
+#
+#   docker compose up --build          postgres → migrate → api, worker, mock-consumer, dashboard
+#   docker compose --profile demo run --rm demo     the end-to-end demo against the stack
+#
+#   dashboard      http://localhost:8080   (sign in with a key from the create-app command below)
+#   api            http://localhost:3000   (/healthz, /metrics, /v1/...)
+#   mock consumer  http://localhost:4000   (/stats, /control)
+#
+#   docker compose run --rm api node dist/scripts/create-app.js my-app
+#
+# NOT a production deployment: the database password is a fixed demo value, and the two
+# development-only security flags below are switched on (see the comment there).
+
+name: relay
+
+x-server-env: &server-env
+  DATABASE_URL: postgresql://relay:relay@postgres:5432/relay
+  API_HOST: 0.0.0.0
+  API_PORT: '3000'
+  LOG_LEVEL: info
+  # Demo-friendly timings (defaults: 2 s base, 6 attempts, 30 s cooldown, 10 s timeout).
+  RETRY_BASE_MS: '500'
+  RETRY_CAP_MS: '10000'
+  MAX_ATTEMPTS: '4'
+  CIRCUIT_FAILURE_THRESHOLD: '3'
+  CIRCUIT_COOLDOWN_MS: '5000'
+  HTTP_TIMEOUT_MS: '2000'
+  LEASE_MS: '10000' # must be >= 2 * HTTP_TIMEOUT_MS + 5000
+  # DEVELOPMENT ONLY. The mock consumer is another container on this private network, at
+  # http://mock-consumer:4000. With the defaults (false) Relay's SSRF protection would
+  # correctly refuse to call it. Never enable these where real customer URLs are delivered.
+  RELAY_ALLOW_PRIVATE_NETWORKS: 'true'
+  ALLOW_HTTP_ENDPOINTS: 'true'
+
+x-server-image: &server-image
+  build:
+    context: .
+    dockerfile: server/Dockerfile
+  image: relay-server:local
+  init: true # forwards SIGTERM so the API and worker shut down gracefully
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: relay
+      POSTGRES_PASSWORD: relay # demo value only
+      POSTGRES_DB: relay
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U relay -d relay']
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  migrate:
+    <<: *server-image
+    command: ['node', '--enable-source-maps', 'dist/scripts/migrate.js']
+    environment: *server-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: 'no'
+
+  api:
+    <<: *server-image
+    command: ['node', '--enable-source-maps', 'dist/server.js']
+    environment: *server-env
+    ports:
+      - '3000:3000'
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ['CMD-SHELL', 'wget -qO- http://127.0.0.1:3000/healthz || exit 1']
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  worker:
+    <<: *server-image
+    command: ['node', '--enable-source-maps', 'dist/worker/index.js']
+    environment:
+      <<: *server-env
+      WORKER_ID: worker-1
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    # Scale out with: docker compose up --scale worker=3 (SKIP LOCKED keeps claims disjoint;
+    # drop WORKER_ID so each replica uses its default hostname-pid id).
+
+  mock-consumer:
+    build:
+      context: .
+      dockerfile: mock-consumer/Dockerfile
+    image: relay-mock-consumer:local
+    init: true
+    ports:
+      - '4000:4000'
+
+  dashboard:
+    build:
+      context: .
+      dockerfile: dashboard/Dockerfile
+    image: relay-dashboard:local
+    environment:
+      RELAY_API_UPSTREAM: http://api:3000
+    ports:
+      - '8080:80'
+    depends_on:
+      api:
+        condition: service_healthy
+
+  # One-shot: docker compose --profile demo run --rm demo
+  demo:
+    <<: *server-image
+    profiles: [demo]
+    command: ['node', '--enable-source-maps', 'dist/scripts/demo.js']
+    environment:
+      <<: *server-env
+      DEMO_API_URL: http://api:3000
+      DEMO_MOCK_URL: http://mock-consumer:4000
+    depends_on:
+      api:
+        condition: service_healthy
+      worker:
+        condition: service_started
+      mock-consumer:
+        condition: service_healthy
+    restart: 'no'
+
+volumes:
+  pgdata:
