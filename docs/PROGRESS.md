@@ -5,7 +5,7 @@ Status legend: [x] done · [ ] pending · [~] in progress · [-] cut / deferred
 **Current milestone:** Day 5 complete — v1 feature-complete
 **Next action (yours):** record the demo / screenshots. CI's Docker stack + end-to-end demo job
 passed on its first run; the test jobs (Node 22/24) failed at the mock consumer step until
-22ff218. Any further CI failure is fixed before v1 is called done.
+22ff218. CI is green on 22ff218 (all three jobs, run 4).
 
 ---
 
