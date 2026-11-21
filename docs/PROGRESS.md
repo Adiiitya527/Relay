@@ -3,9 +3,9 @@
 Status legend: [x] done · [ ] pending · [~] in progress · [-] cut / deferred
 
 **Current milestone:** Day 5 complete — v1 feature-complete
-**Next action (yours):** add the GitHub remote and push; check that both CI jobs pass (tests on
-Node 22/24, and the Docker stack + end-to-end demo, which has never run on the dev machine);
-record the demo / screenshots. Session 7's remaining buffer is for anything CI turns up.
+**Next action (yours):** record the demo / screenshots. CI's Docker stack + end-to-end demo job
+passed on its first run; the test jobs (Node 22/24) failed at the mock consumer step until
+22ff218. Any further CI failure is fixed before v1 is called done.
 
 ---
 
@@ -14,7 +14,7 @@ record the demo / screenshots. Session 7's remaining buffer is for anything CI t
 - [x] Node, Git, PostgreSQL installed and verified (Node 26.13, PostgreSQL 18)
 - [x] Databases `relay` and `relay_test` created (role `relay`)
 - [x] Repo initialised; CLAUDE.md, docs/ARCHITECTURE.md, docs/PROGRESS.md committed
-- [ ] GitHub remote added and first push done (yours)
+- [x] GitHub remote added and first push done (yours)
 - [x] Day 1 plan produced in Plan Mode, reviewed and approved (`docs/plans/day1.md`)
 
 ## Day 1 — Foundation: schema, API, idempotent ingestion
@@ -175,7 +175,7 @@ cleanup, auto-disable endpoints on 410 Gone.
 | D72 | Docker: one server image (migrate / API / worker / demo); nginx serves the dashboard and proxies `/v1` (same origin, upstream from env, CSP, `/metrics` not forwarded); compose enables the private-network flags only for its own network. Validated in CI by running the demo inside the stack | Docker does not run on the dev machine (D10); the Dockerfiles' install/build steps were rehearsed locally in clean folders |
 
 ## Known limitations / blockers
-- Docker/WSL2 not working on dev machine; Docker Compose deferred to Day 5 (validated in CI).
+- Docker/WSL2 not working on dev machine; the Docker stack is validated in CI only (D10).
 - Claim query filters open-circuit / disabled endpoints after the index scan, so a large paused
   backlog is rescanned each poll. Fine at demo scale; future fix: push `next_attempt_at` forward
   when a circuit opens.
@@ -212,11 +212,11 @@ cleanup, auto-disable endpoints on 410 Gone.
   later page covering them is fetched (the first page is always fresh).
 - Dashboard: in the unfiltered dead-letter view, the bulk "replay all dead" buttons cover only
   endpoints with dead rows on the loaded pages (filter by endpoint for any other).
-- Dashboard: dev server only so far; production serving (static build behind the same origin)
-  comes with Docker on Day 5. Relative times ("12 s ago") use the browser clock (display only).
+- Dashboard: relative times ("12 s ago") use the browser clock (display only).
 - Dashboard UI has no component tests (D64); checked by tsc, the build and a manual walkthrough.
-- CI and the Docker stack have not run yet (no remote; Docker unavailable locally). Timing-based
-  tests passed consistently here but have not been tried on shared CI runners.
+- The dev machine runs Node 26; Node 22 and 24 (the supported minimum and current LTS) are
+  tested only in CI. A Node 26-only behaviour (`node --test` with a directory) went unnoticed
+  locally and failed CI's first runs (fixed in 22ff218).
 - `docker-compose.yml` is a demo stack (fixed database password, development-only network flags),
   not a production deployment.
 
